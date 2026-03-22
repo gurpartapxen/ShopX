@@ -65,8 +65,8 @@ export const vendorsAPI = {
     update:     (data) => api.patch("/vendors/me/",                  data),
     getById:    (id)   => api.get(`/vendors/${id}/`),
     list:       (params) => api.get("/vendors/admin/list/",          { params }),
-    approve:    (id)   => api.patch(`/vendors/admin/${id}/approve/`),
-    suspend:    (id)   => api.patch(`/vendors/admin/${id}/suspend/`),
+    approve: (id) => api.patch(`/vendors/admin/${id}/approve/`, { is_approved: true }),
+    suspend: (id) => api.patch(`/vendors/admin/${id}/suspend/`, { is_approved: false }),
 };
 
    export const productsAPI = {
