@@ -1,0 +1,37 @@
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    background: #0a0a0a;
+    min-height: 100vh;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    background: #0a0a0a;
+    min-height: 100vh;
+    -webkit-text-size-adjust: 100%;
+}
+
+/* prevent horizontal scroll on mobile */
+body {
+    overflow-x: hidden;
+}
+
+/* better touch targets on mobile */
+button {
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* smooth scrolling */
+html {
+    scroll-behavior: smooth;
+}
