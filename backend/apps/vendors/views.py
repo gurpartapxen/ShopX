@@ -128,7 +128,13 @@ class AdminVendorApproveView(APIView):
         is_approved = request.data.get("is_approved")
 
         if is_approved is None:
-            return Response({"success": False, "message": "is_approved (true or false) is required"}, status=400)
+            return Response({"success": False, "message": "is_approved is required"}, status=400)
+
+        # handle both boolean and string
+        if isinstance(is_approved, str):
+            is_approved = is_approved.lower() == "true"
+        else:
+            is_approved = bool(is_approved)
 
         vendor = vendors_col().find_one({"_id": to_object_id(vendor_id)})
         if not vendor:
@@ -136,10 +142,7 @@ class AdminVendorApproveView(APIView):
 
         vendors_col().update_one(
             {"_id": to_object_id(vendor_id)},
-            {"$set": {
-                "is_approved": bool(is_approved),
-                "updated_at":  datetime.utcnow(),
-            }}
+            {"$set": {"is_approved": is_approved, "updated_at": datetime.utcnow()}}
         )
 
         action = "approved" if is_approved else "suspended"
