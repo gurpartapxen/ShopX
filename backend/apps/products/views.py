@@ -1,0 +1,417 @@
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
+from datetime import datetime
+import cloudinary
+import cloudinary.uploader
+import os
+
+from utils.db import products_col, vendors_col, inventory_col, get_db
+from utils.helpers import to_str_id, to_object_id
+from utils.permissions import require_role
+
+
+def reviews_col():
+    return get_db()["reviews"]
+
+
+def get_vendor(user_id: str):
+    return vendors_col().find_one({
+        "user_id":     user_id,
+        "is_approved": True,
+        "is_active":   True,
+    })
+
+
+class ProductListCreateView(APIView):
+    def get_permissions(self):
+        return [AllowAny()]
+
+    def get(self, request):
+        query = {"is_active": True}
+
+        vendor_id = request.query_params.get("vendor_id")
+        if vendor_id:
+            query["vendor_id"] = vendor_id
+
+        category = request.query_params.get("category")
+        if category:
+            query["category"] = category
+
+        search = request.query_params.get("q")
+        if search:
+            query["$or"] = [
+                {"name":        {"$regex": search, "$options": "i"}},
+                {"description": {"$regex": search, "$options": "i"}},
+            ]
+
+        min_price = request.query_params.get("min_price")
+        max_price = request.query_params.get("max_price")
+        if min_price or max_price:
+            query["price"] = {}
+            if min_price:
+                query["price"]["$gte"] = float(min_price)
+            if max_price:
+                query["price"]["$lte"] = float(max_price)
+
+        has_discount = request.query_params.get("has_discount")
+        if has_discount:
+            query["discount"] = {"$gt": 0}
+
+        page  = max(int(request.query_params.get("page",  1)), 1)
+        limit = min(int(request.query_params.get("limit", 20)), 100)
+        skip  = (page - 1) * limit
+
+        sort_by  = request.query_params.get("sort", "created_at")
+        sort_dir = -1 if request.query_params.get("order", "desc") == "desc" else 1
+        sort_map = {
+            "created_at": "created_at",
+            "price_asc":  "price",
+            "price_desc": "price",
+            "name":       "name",
+        }
+        sort_field = sort_map.get(sort_by, "created_at")
+        if sort_by == "price_asc":
+            sort_dir = 1
+        elif sort_by == "price_desc":
+            sort_dir = -1
+
+        low_stock = request.query_params.get("low_stock")
+
+        raw_products = list(
+            products_col().find(query)
+            .sort(sort_field, sort_dir)
+            .skip(skip)
+            .limit(limit)
+        )
+
+        products = []
+        for p in raw_products:
+            p_id  = str(p["_id"])
+            inv   = inventory_col().find_one({"product_id": p_id})
+            stock = inv["quantity"] if inv else 0
+
+            if low_stock and not (0 < stock < 20):
+                continue
+
+            # attach avg rating
+            pipeline = [
+                {"$match": {"product_id": p_id}},
+                {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}}
+            ]
+            agg = list(reviews_col().aggregate(pipeline))
+            p["avg_rating"]    = round(agg[0]["avg"], 1) if agg else 0
+            p["review_count"]  = agg[0]["count"] if agg else 0
+            p["stock"] = stock
+            products.append(to_str_id(p))
+
+        total = products_col().count_documents(query)
+
+        return Response({
+            "success": True,
+            "data": {
+                "products": products,
+                "total":    total,
+                "page":     page,
+                "pages":    max((total + limit - 1) // limit, 1),
+            }
+        })
+
+    @require_role("vendor")
+    def post(self, request):
+        user_id = request.user.pk
+        vendor  = get_vendor(user_id)
+
+        if not vendor:
+            return Response({
+                "success": False,
+                "message": "your vendor account must be approved before adding products"
+            }, status=403)
+
+        name     = request.data.get("name",     "").strip()
+        price    = request.data.get("price")
+        category = request.data.get("category", "").strip()
+
+        if not name:
+            return Response({"success": False, "message": "name is required"}, status=400)
+        if not category:
+            return Response({"success": False, "message": "category is required"}, status=400)
+
+        try:
+            price = float(price)
+            if price < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"success": False, "message": "price must be a positive number"}, status=400)
+
+        try:
+            discount = max(0, min(90, int(request.data.get("discount", 0) or 0)))
+        except (TypeError, ValueError):
+            discount = 0
+
+        vendor_id = str(vendor["_id"])
+
+        product_doc = {
+            "vendor_id":   vendor_id,
+            "name":        name,
+            "description": request.data.get("description", "").strip(),
+            "price":       price,
+            "discount":    discount,
+            "category":    category,
+            "images":      request.data.get("images", []),
+            "tags":        request.data.get("tags",   []),
+            "is_active":   True,
+            "created_at":  datetime.utcnow(),
+            "updated_at":  datetime.utcnow(),
+        }
+
+        result     = products_col().insert_one(product_doc)
+        product_id = str(result.inserted_id)
+
+        inventory_col().insert_one({
+            "product_id": product_id,
+            "vendor_id":  vendor_id,
+            "quantity":   int(request.data.get("quantity", 0)),
+            "updated_at": datetime.utcnow(),
+        })
+
+        product_doc["id"] = product_id
+        product_doc.pop("_id", None)
+
+        return Response({
+            "success": True,
+            "message": "product created successfully",
+            "data":    product_doc
+        }, status=201)
+
+
+class ProductDetailView(APIView):
+    def get_permissions(self):
+        return [AllowAny()]
+
+    def get(self, request, product_id):
+        product = products_col().find_one({
+            "_id":       to_object_id(product_id),
+            "is_active": True,
+        })
+        if not product:
+            return Response({"success": False, "message": "product not found"}, status=404)
+
+        inv = inventory_col().find_one({"product_id": product_id})
+        product["stock"] = inv["quantity"] if inv else 0
+
+        # attach reviews summary
+        pipeline = [
+            {"$match": {"product_id": product_id}},
+            {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}}
+        ]
+        agg = list(reviews_col().aggregate(pipeline))
+        product["avg_rating"]   = round(agg[0]["avg"], 1) if agg else 0
+        product["review_count"] = agg[0]["count"] if agg else 0
+
+        # star breakdown
+        breakdown = {}
+        for star in range(1, 6):
+            breakdown[str(star)] = reviews_col().count_documents({
+                "product_id": product_id,
+                "rating": star
+            })
+        product["rating_breakdown"] = breakdown
+
+        return Response({"success": True, "data": to_str_id(product)})
+
+    @require_role("vendor")
+    def patch(self, request, product_id):
+        product = products_col().find_one({"_id": to_object_id(product_id)})
+        if not product:
+            return Response({"success": False, "message": "product not found"}, status=404)
+
+        vendor = get_vendor(request.user.pk)
+        if not vendor or str(vendor["_id"]) != product["vendor_id"]:
+            return Response({"success": False, "message": "you can only edit your own products"}, status=403)
+
+        allowed = {"name", "description", "price", "discount", "category", "images", "tags"}
+        updates = {k: v for k, v in request.data.items() if k in allowed}
+
+        if not updates:
+            return Response({"success": False, "message": "no valid fields to update"}, status=400)
+
+        updates["updated_at"] = datetime.utcnow()
+        products_col().update_one({"_id": to_object_id(product_id)}, {"$set": updates})
+
+        return Response({"success": True, "message": "product updated successfully"})
+
+    @require_role("vendor")
+    def delete(self, request, product_id):
+        product = products_col().find_one({"_id": to_object_id(product_id)})
+        if not product:
+            return Response({"success": False, "message": "product not found"}, status=404)
+
+        vendor = get_vendor(request.user.pk)
+        if not vendor or str(vendor["_id"]) != product["vendor_id"]:
+            return Response({"success": False, "message": "you can only delete your own products"}, status=403)
+
+        products_col().update_one(
+            {"_id": to_object_id(product_id)},
+            {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+        )
+        return Response({"success": True, "message": "product removed successfully"})
+
+
+class InventoryView(APIView):
+    def get(self, request, product_id):
+        inv = inventory_col().find_one({"product_id": product_id})
+        if not inv:
+            return Response({"success": False, "message": "inventory record not found"}, status=404)
+        return Response({
+            "success": True,
+            "data": {
+                "product_id": product_id,
+                "quantity":   inv["quantity"],
+                "updated_at": inv["updated_at"],
+            }
+        })
+
+    @require_role("vendor")
+    def patch(self, request, product_id):
+        product = products_col().find_one({"_id": to_object_id(product_id)})
+        if not product:
+            return Response({"success": False, "message": "product not found"}, status=404)
+
+        vendor = get_vendor(request.user.pk)
+        if not vendor or str(vendor["_id"]) != product["vendor_id"]:
+            return Response({"success": False, "message": "you can only update inventory for your own products"}, status=403)
+
+        try:
+            quantity = int(request.data.get("quantity"))
+            if quantity < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"success": False, "message": "quantity must be a non-negative integer"}, status=400)
+
+        inventory_col().update_one(
+            {"product_id": product_id},
+            {"$set": {"quantity": quantity, "updated_at": datetime.utcnow()}},
+            upsert=True,
+        )
+
+        return Response({
+            "success": True,
+            "message": "inventory updated successfully",
+            "data": {"product_id": product_id, "quantity": quantity}
+        })
+
+
+class ImageUploadView(APIView):
+    @require_role("vendor")
+    def post(self, request):
+        image = request.FILES.get("image")
+        if not image:
+            return Response({"success": False, "message": "image file is required"}, status=400)
+
+        cloudinary.config(
+            cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME"),
+            api_key    = os.getenv("CLOUDINARY_API_KEY"),
+            api_secret = os.getenv("CLOUDINARY_API_SECRET"),
+        )
+
+        result = cloudinary.uploader.upload(
+            image,
+            folder         = "ecommerce/products",
+            transformation = [{"width": 800, "height": 800, "crop": "limit"}],
+        )
+
+        return Response({
+            "success": True,
+            "message": "image uploaded successfully",
+            "data":    {"url": result["secure_url"]}
+        })
+
+
+class ProductReviewsView(APIView):
+    def get_permissions(self):
+        return [AllowAny()]
+
+    def get(self, request, product_id):
+        """fetch all reviews for a product"""
+        product = products_col().find_one({"_id": to_object_id(product_id)})
+        if not product:
+            return Response({"success": False, "message": "product not found"}, status=404)
+
+        page  = max(int(request.query_params.get("page",  1)), 1)
+        limit = min(int(request.query_params.get("limit", 10)), 50)
+        skip  = (page - 1) * limit
+
+        raw = list(
+            reviews_col()
+            .find({"product_id": product_id})
+            .sort("created_at", -1)
+            .skip(skip)
+            .limit(limit)
+        )
+
+        reviews = [to_str_id(r) for r in raw]
+        total   = reviews_col().count_documents({"product_id": product_id})
+
+        return Response({
+            "success": True,
+            "data": {
+                "reviews": reviews,
+                "total":   total,
+                "page":    page,
+                "pages":   max((total + limit - 1) // limit, 1),
+            }
+        })
+
+    @require_role("customer")
+    def post(self, request, product_id):
+        """submit a review — one per customer per product"""
+        product = products_col().find_one({
+            "_id":       to_object_id(product_id),
+            "is_active": True,
+        })
+        if not product:
+            return Response({"success": False, "message": "product not found"}, status=404)
+
+        user_id = request.user.pk
+
+        # one review per customer per product
+        existing = reviews_col().find_one({
+            "product_id": product_id,
+            "user_id":    user_id,
+        })
+        if existing:
+            return Response({
+                "success": False,
+                "message": "you have already reviewed this product"
+            }, status=400)
+
+        try:
+            rating = int(request.data.get("rating"))
+            if not 1 <= rating <= 5:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"success": False, "message": "rating must be between 1 and 5"}, status=400)
+
+        comment = request.data.get("comment", "").strip()
+        if len(comment) > 1000:
+            return Response({"success": False, "message": "comment too long (max 1000 chars)"}, status=400)
+
+        review_doc = {
+            "product_id": product_id,
+            "user_id":    user_id,
+            "user_name":  request.user.name if hasattr(request.user, "name") else "Customer",
+            "rating":     rating,
+            "comment":    comment,
+            "created_at": datetime.utcnow(),
+        }
+
+        result = reviews_col().insert_one(review_doc)
+        review_doc["id"] = str(result.inserted_id)
+        review_doc.pop("_id", None)
+
+        return Response({
+            "success": True,
+            "message": "review submitted successfully",
+            "data":    review_doc
+        }, status=201)
