@@ -135,7 +135,7 @@ NEXT_PUBLIC_API_URL=http://127.0.0.1:8000/api
 |------|-------|----------|
 | Customer | test@gmail.com | test123 |
 | Vendor | vendor@gmail.com | vendor123 |
-| Admin | admin@gmail.com | admin123 |
+| Admin | admin@gmail.com | admin234 |
 
 **Razorpay test payment**
 - UPI: `success@razorpay`
