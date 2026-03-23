@@ -52,45 +52,54 @@ export default function StorePage() {
         setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
     };
 
-    const fetchProducts = async () => {
-        setLoading(true);
-        try {
-            const params = {};
-            if (category) params.category = category;
-            const res = await productsAPI.list(params);
-            let prods = res.data.data.products;
+   const fetchProducts = async () => {
+    setLoading(true);
+    try {
+        const cacheKey = `products_${category}_${gender}_${search}`;
+        const cached = sessionStorage.getItem(cacheKey);
 
-            if (search) {
-                const q = search.toLowerCase();
-                prods = prods.filter(p =>
-                    p.name?.toLowerCase().includes(q) ||
-                    p.description?.toLowerCase().includes(q) ||
-                    p.category?.toLowerCase().includes(q)
-                );
-            }
-
-            if (gender && (category === "clothing" || category === "shoes")) {
-                prods = prods.filter(p => {
-                    const name = p.name?.toLowerCase() || "";
-                    const desc = p.description?.toLowerCase() || "";
-                    if (gender === "men") {
-                        return (
-                            (/\bmen\b/.test(name) && !name.includes("women")) ||
-                            (/\bmen\b/.test(desc) && !desc.includes("women"))
-                        );
-                    }
-                    return name.includes("women") || desc.includes("women");
-                });
-            }
-
-            setProducts(prods);
-        } catch (err) {
-            console.error(err);
-        } finally {
+        if (cached) {
+            setProducts(JSON.parse(cached));
             setLoading(false);
+            return;
         }
-    };
 
+        const params = {};
+        if (category) params.category = category;
+        const res = await productsAPI.list(params);
+        let prods = res.data.data.products;
+
+        if (search) {
+            const q = search.toLowerCase();
+            prods = prods.filter(p =>
+                p.name?.toLowerCase().includes(q) ||
+                p.description?.toLowerCase().includes(q) ||
+                p.category?.toLowerCase().includes(q)
+            );
+        }
+
+        if (gender && (category === "clothing" || category === "shoes")) {
+            prods = prods.filter(p => {
+                const name = p.name?.toLowerCase() || "";
+                const desc = p.description?.toLowerCase() || "";
+                if (gender === "men") {
+                    return (
+                        (/\bmen\b/.test(name) && !name.includes("women")) ||
+                        (/\bmen\b/.test(desc) && !desc.includes("women"))
+                    );
+                }
+                return name.includes("women") || desc.includes("women");
+            });
+        }
+
+        sessionStorage.setItem(cacheKey, JSON.stringify(prods));
+        setProducts(prods);
+    } catch (err) {
+        console.error(err);
+    } finally {
+        setLoading(false);
+    }
+};
     const closeSidebar = () => {
         setClosingSidebar(true);
         setTimeout(() => {
