@@ -42,18 +42,10 @@ export default function AdminDashboard() {
         setVendors(vendorsRes.data.data.vendors || []);
         setCoupons(couponsRes.data.data.coupons || []);
 
+        // just use products directly without fetching inventory for each one
         const prods = productsRes.data.data.products || [];
-        const prodsWithStock = await Promise.all(
-            prods.map(async (p) => {
-                try {
-                    const invRes = await productsAPI.getInventory(p.id);
-                    return { ...p, stock: invRes.data.data.quantity };
-                } catch {
-                    return { ...p, stock: 0 };
-                }
-            })
-        );
-        setProducts(prodsWithStock);
+        setProducts(prods.map(p => ({ ...p, stock: 0 })));
+
     } catch (err) {
         console.error(err);
         if (!isRetry) {
