@@ -31,30 +31,36 @@ export default function AdminDashboard() {
         fetchAll();
     }, [user, authLoading]);
 
-    const fetchAll = async (isRetry = false) => {
-    setLoading(true);
-    try {
-        const [vendorsRes, productsRes, couponsRes] = await Promise.all([
-            vendorsAPI.list(),
-            productsAPI.list({ limit: 100 }),
-            ordersAPI.getCoupons(),
-        ]);
-        setVendors(vendorsRes.data.data.vendors || []);
-        setCoupons(couponsRes.data.data.coupons || []);
+    const fetchAll = async () => {
+        setLoading(true);
+        try {
+            const [vendorsRes, productsRes, couponsRes] = await Promise.all([
+                vendorsAPI.list(),
+                productsAPI.list({ limit: 100 }),
+                ordersAPI.getCoupons(),
+            ]);
+            setVendors(vendorsRes.data.data.vendors || []);
+            setCoupons(couponsRes.data.data.coupons || []);
 
-        // just use products directly without fetching inventory for each one
-        const prods = productsRes.data.data.products || [];
-        setProducts(prods.map(p => ({ ...p, stock: 0 })));
-
-    } catch (err) {
-        console.error(err);
-        if (!isRetry) {
-            setTimeout(() => fetchAll(true), 4000);
+            const prods = productsRes.data.data.products || [];
+            const prodsWithStock = await Promise.all(
+                prods.map(async (p) => {
+                    try {
+                        const invRes = await productsAPI.getInventory(p.id);
+                        return { ...p, stock: invRes.data.data.quantity };
+                    } catch {
+                        return { ...p, stock: 0 };
+                    }
+                })
+            );
+            setProducts(prodsWithStock);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setLoading(false);
         }
-    } finally {
-        setLoading(false);
-    }
-};
+    };
+
     const handleApprove = async (vendorId) => {
         setActionLoading(vendorId + "_approve");
         try { await vendorsAPI.approve(vendorId); fetchAll(); }
@@ -262,15 +268,7 @@ export default function AdminDashboard() {
                 <div className="main">
                     <div className="dash-header">
                         <h1 className="dash-title">Admin Dashboard</h1>
-                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-    <p className="dash-sub">Manage vendors, products, coupons and platform activity</p>
-    <button onClick={() => fetchAll()} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.5)", borderRadius: 8, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "Inter, sans-serif", transition: "all 0.15s" }}
-        onMouseEnter={e => e.target.style.color = "#f5f5f7"}
-        onMouseLeave={e => e.target.style.color = "rgba(255,255,255,0.5)"}
-    >
-        ↻ Refresh
-    </button>
-                 </div>
+                        <p className="dash-sub">Manage vendors, products, coupons and platform activity</p>
                     </div>
 
                     {pendingVendors.length > 0 && (
