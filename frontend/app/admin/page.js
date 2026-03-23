@@ -31,35 +31,24 @@ export default function AdminDashboard() {
         fetchAll();
     }, [user, authLoading]);
 
-    const fetchAll = async () => {
-        setLoading(true);
-        try {
-            const [vendorsRes, productsRes, couponsRes] = await Promise.all([
-                vendorsAPI.list(),
-                productsAPI.list({ limit: 100 }),
-                ordersAPI.getCoupons(),
-            ]);
-            setVendors(vendorsRes.data.data.vendors || []);
-            setCoupons(couponsRes.data.data.coupons || []);
-
-            const prods = productsRes.data.data.products || [];
-            const prodsWithStock = await Promise.all(
-                prods.map(async (p) => {
-                    try {
-                        const invRes = await productsAPI.getInventory(p.id);
-                        return { ...p, stock: invRes.data.data.quantity };
-                    } catch {
-                        return { ...p, stock: 0 };
-                    }
-                })
-            );
-            setProducts(prodsWithStock);
-        } catch (err) {
-            console.error(err);
-        } finally {
-            setLoading(false);
-        }
-    };
+    const fetchAll = async (isRetry = false) => {
+    setLoading(true);
+    try {
+        const [vendorsRes, productsRes, couponsRes] = await Promise.all([
+            vendorsAPI.list(),
+            productsAPI.list({ limit: 50 }),
+            ordersAPI.getCoupons(),
+        ]);
+        setVendors(vendorsRes.data.data.vendors || []);
+        setCoupons(couponsRes.data.data.coupons || []);
+        setProducts(productsRes.data.data.products || []);
+    } catch (err) {
+        console.error(err);
+        if (!isRetry) setTimeout(() => fetchAll(true), 4000);
+    } finally {
+        setLoading(false);
+    }
+};
 
     const handleApprove = async (vendorId) => {
         setActionLoading(vendorId + "_approve");
