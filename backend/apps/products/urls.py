@@ -6,7 +6,7 @@ from .views import (
     ImageUploadView,
     ProductReviewsView,
 )
-
+//paths for products
 urlpatterns = [
     path("",                                  ProductListCreateView.as_view(), name="product-list-create"),
     path("upload-image/",                     ImageUploadView.as_view(),       name="product-upload-image"),
