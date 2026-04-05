@@ -1,4 +1,4 @@
-# ShopX 🛍️
+# ShopX 
 
 A full-stack multi-vendor e-commerce platform built with Django and Next.js. 
 Vendors can list products, customers can buy them, and admins keep everything in check.
