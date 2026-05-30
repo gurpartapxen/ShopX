@@ -5,7 +5,11 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
 export default function WishlistPage() {
-    const [wishlist, setWishlist] = useState(() => JSON.parse(localStorage.getItem("wishlist") || "[]"));
+    const [wishlist, setWishlist] = useState(() =>
+        typeof window !== "undefined"
+            ? JSON.parse(localStorage.getItem("wishlist") || "[]")
+            : []
+    );
     const [loading,  setLoading]  = useState(false);
     const router = useRouter();
     const { user, loading: authLoading } = useAuth();
