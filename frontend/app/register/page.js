@@ -278,7 +278,7 @@ export default function RegisterPage() {
                     )}
 
                     <p className="footer-text">
-                        By creating an account, you agree to ShopX's<br />
+                        By creating an account, you agree to ShopX&apos;s<br />
                         Terms of Service and Privacy Policy.
                     </p>
                 </div>

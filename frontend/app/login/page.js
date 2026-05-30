@@ -377,7 +377,7 @@ export default function LoginPage() {
                     </button>
 
                     <p className="footer-text">
-                        By signing in, you agree to ShopX's Terms of Service and Privacy Policy.
+                        By signing in, you agree to ShopX&apos;s Terms of Service and Privacy Policy.
                     </p>
                 </div>
             </div>

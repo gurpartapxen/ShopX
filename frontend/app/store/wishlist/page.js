@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
 export default function WishlistPage() {
-    const [wishlist, setWishlist] = useState([]);
-    const [loading,  setLoading]  = useState(true);
+    const [wishlist, setWishlist] = useState(() => JSON.parse(localStorage.getItem("wishlist") || "[]"));
+    const [loading,  setLoading]  = useState(false);
     const router = useRouter();
     const { user, loading: authLoading } = useAuth();
 
@@ -14,11 +14,6 @@ export default function WishlistPage() {
         if (!authLoading && !user) router.push("/login");
     }, [user, authLoading]);
 
-    useEffect(() => {
-        const stored = JSON.parse(localStorage.getItem("wishlist") || "[]");
-        setWishlist(stored);
-        setLoading(false);
-    }, []);
 
     const removeFromWishlist = (productId) => {
         const updated = wishlist.filter(i => i.product_id !== productId);

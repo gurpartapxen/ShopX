@@ -5,22 +5,29 @@ import { authAPI, setAccessToken, clearAccessToken } from "@/lib/api";
 
 const AuthContext = createContext(null);
 
+// Read localStorage synchronously before first render so we know whether a
+// refresh attempt is needed — avoids calling setLoading(false) inside a useEffect.
+function _readSession() {
+    if (typeof window === "undefined") return { user: null, refresh: null };
+    return {
+        user:    localStorage.getItem("user"),
+        refresh: localStorage.getItem("refresh_token"),
+    };
+}
+
 export function AuthProvider({ children }) {
-    const [user,    setUser]    = useState(null);
-    const [loading, setLoading] = useState(true);
+    const session = _readSession();
+
+    const [user,    setUser]    = useState(session.user ? JSON.parse(session.user) : null);
+    // loading=true only when we have a session to validate via the refresh endpoint
+    const [loading, setLoading] = useState(!!(session.user && session.refresh));
 
     useEffect(() => {
-        const savedUser    = localStorage.getItem("user");
-        const savedRefresh = localStorage.getItem("refresh_token");
+        const savedUser    = session.user;
+        const savedRefresh = session.refresh;
 
-        // Nothing persisted — user was never logged in or already logged out
-        if (!savedUser || !savedRefresh) {
-            setLoading(false);
-            return;
-        }
-
-        // Restore display state immediately so the UI doesn't flash the login page
-        setUser(JSON.parse(savedUser));
+        // No persisted session — nothing to restore, loading already false
+        if (!savedUser || !savedRefresh) return;
 
         // Exchange the refresh token for a fresh access token.
         // Strategy (belt & suspenders):

@@ -35,4 +35,3 @@ def require_role(*roles):
             return func(self, request, *args, **kwargs)
         return wrapper
     return decorator
-

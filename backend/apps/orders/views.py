@@ -1,23 +1,25 @@
-from rest_framework.views import APIView
+import hashlib
+import hmac
+import os
+from datetime import datetime
+
+import razorpay
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
-from datetime import datetime
-import razorpay
-import os
-import hmac
-import hashlib
-
-
-class CheckoutRateThrottle(UserRateThrottle):
-    scope = "checkout"
-
-class PaymentRateThrottle(UserRateThrottle):
-    scope = "payment"
+from rest_framework.views import APIView
 
 from utils.db import orders_col, products_col, inventory_col, vendors_col, get_db
 from utils.helpers import to_str_id, to_object_id
 from utils.permissions import require_role
 from utils.sanitize import clean
+
+
+class CheckoutRateThrottle(UserRateThrottle):
+    scope = "checkout"
+
+
+class PaymentRateThrottle(UserRateThrottle):
+    scope = "payment"
 
 
 def get_razorpay_client():
@@ -54,7 +56,10 @@ class CouponValidateView(APIView):
 
         min_amount = coupon.get("min_order_amount", 0)
         if total < min_amount:
-            return Response({"success": False, "message": f"minimum order amount for this coupon is ₹{min_amount}"}, status=400)
+            return Response(
+                {"success": False, "message": f"minimum order amount for this coupon is ₹{min_amount}"},
+                status=400,
+            )
 
         discount_type  = coupon.get("discount_type", "percentage")
         discount_value = coupon.get("discount_value", 0)
@@ -120,7 +125,10 @@ class CheckoutView(APIView):
                 }, status=400)
 
             if vendor_id and product["vendor_id"] != vendor_id:
-                return Response({"success": False, "message": "cart can only contain products from one vendor"}, status=400)
+                return Response(
+                    {"success": False, "message": "cart can only contain products from one vendor"},
+                    status=400,
+                )
             vendor_id = product["vendor_id"]
 
             price = product["price"]
@@ -226,7 +234,10 @@ class PaymentVerifyView(APIView):
         expected   = hmac.new(key_secret.encode(), payload, hashlib.sha256).hexdigest()
 
         if not hmac.compare_digest(expected, rz_signature):
-            return Response({"success": False, "message": "payment verification failed — invalid signature"}, status=400)
+            return Response(
+                {"success": False, "message": "payment verification failed — invalid signature"},
+                status=400,
+            )
 
         order = orders_col().find_one({"_id": to_object_id(order_id)})
         if not order:
@@ -364,14 +375,21 @@ class VendorOrderUpdateView(APIView):
         valid_statuses = ["processing", "shipped", "delivered", "cancelled"]
 
         if new_status not in valid_statuses:
-            return Response({"success": False, "message": f"status must be one of: {', '.join(valid_statuses)}"}, status=400)
+            return Response(
+                {"success": False, "message": f"status must be one of: {', '.join(valid_statuses)}"},
+                status=400,
+            )
 
         orders_col().update_one(
             {"_id": to_object_id(order_id)},
             {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
         )
 
-        return Response({"success": True, "message": f"order status updated to '{new_status}'", "data": {"order_id": order_id, "status": new_status}})
+        return Response({
+            "success": True,
+            "message": f"order status updated to '{new_status}'",
+            "data": {"order_id": order_id, "status": new_status},
+        })
 
 
 class AdminCouponView(APIView):
@@ -400,7 +418,7 @@ class AdminCouponView(APIView):
             "description":        data.get("description", ""),
             "discount_type":      discount_type,
             "discount_value":     discount_value,
-            "max_discount_amount":data.get("max_discount_amount"),
+            "max_discount_amount": data.get("max_discount_amount"),
             "min_order_amount":   float(data.get("min_order_amount", 0)),
             "max_uses":           data.get("max_uses"),
             "used_count":         0,
@@ -507,10 +525,16 @@ class ReturnRequestView(APIView):
             return Response({"success": False, "message": "order not found"}, status=404)
 
         if order["user_id"] != request.user.pk:
-            return Response({"success": False, "message": "you can only request returns for your own orders"}, status=403)
+            return Response(
+                {"success": False, "message": "you can only request returns for your own orders"},
+                status=403,
+            )
 
         if order["status"] != "delivered":
-            return Response({"success": False, "message": "return can only be requested for delivered orders"}, status=400)
+            return Response(
+                {"success": False, "message": "return can only be requested for delivered orders"},
+                status=400,
+            )
 
         if order.get("return_requested"):
             return Response({"success": False, "message": "return already requested for this order"}, status=400)

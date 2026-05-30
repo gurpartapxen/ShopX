@@ -707,7 +707,7 @@ export default function StorePage() {
 
                 <div className="latest-section">
                     <div className="latest-header">
-                        <div className="latest-title">The latest. <span>What's new right now.</span></div>
+                        <div className="latest-title">The latest. <span>What&apos;s new right now.</span></div>
                         <button className="latest-see-all" onClick={() => router.push("/store/new-arrivals")}>See all →</button>
                     </div>
                     <div className="latest-scroll">
@@ -818,7 +818,7 @@ export default function StorePage() {
 
                 <div className="trusted">
                     <div className="trusted-inner">
-                        <div className="trusted-title">Trusted by the world's best brands</div>
+                        <div className="trusted-title">Trusted by the world&apos;s best brands</div>
                         <div className="trusted-logos">
                             {trustedBrands.map((brand) => (
                                 <div key={brand} className="trusted-pill">{brand}</div>
@@ -831,7 +831,7 @@ export default function StorePage() {
                     <div className="about-inner">
                         <div>
                             <div className="about-tag">About ShopX</div>
-                            <h2 className="about-title">India's most trusted <em>marketplace.</em></h2>
+                            <h2 className="about-title">India&apos;s most trusted <em>marketplace.</em></h2>
                             <p className="about-desc">ShopX was built with one mission — to connect genuine vendors with real customers across India. We verify every vendor, ensure quality products, and provide a seamless shopping experience from browsing to doorstep delivery.</p>
                             <div className="about-stats">
                                 <div className="about-stat"><div className="about-stat-num">50+</div><div className="about-stat-label">Verified vendors</div></div>

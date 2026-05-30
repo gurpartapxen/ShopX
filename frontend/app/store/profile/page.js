@@ -361,7 +361,7 @@ export default function ProfilePage() {
 
                             <div className="danger-zone">
                                 <div className="danger-title">Danger zone</div>
-                                <div className="danger-desc">Once you sign out, you'll need to log back in with your credentials.</div>
+                                <div className="danger-desc">Once you sign out, you&apos;ll need to log back in with your credentials.</div>
                                 <button className="danger-btn" onClick={logout}>Sign out of all devices</button>
                             </div>
                         </div>

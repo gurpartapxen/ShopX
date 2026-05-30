@@ -1,11 +1,3 @@
-"""
-Input sanitization helpers — NoSQL injection prevention.
-
-MongoDB operators start with '$'. If user-supplied data contains keys like
-{"$where": "..."} or {"$gt": ""} they can bypass query logic. We strip those
-keys before any data reaches the database.
-"""
-
 from typing import Any
 
 

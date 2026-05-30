@@ -58,14 +58,18 @@ def ping_db() -> bool:
 def users_col():
     return get_db()["users"]
 
+
 def vendors_col():
     return get_db()["vendors"]
+
 
 def products_col():
     return get_db()["products"]
 
+
 def inventory_col():
     return get_db()["inventory"]
+
 
 def orders_col():
     return get_db()["orders"]
@@ -93,7 +97,7 @@ def create_indexes():
         [("category", 1), ("is_active", 1)],                         name="products_category_active")
     # Text index enables $text search across name, description, and tags
     db["products"].create_index(
-        [("name", "text"), ("description", "text"), ("tags", "text")],name="products_text_search")
+        [("name", "text"), ("description", "text"), ("tags", "text")], name="products_text_search")
 
     # ── inventory ──────────────────────────────────────────────────────────────
     db["inventory"].create_index("product_id", unique=True,           name="inventory_product_id_unique")

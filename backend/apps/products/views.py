@@ -310,7 +310,10 @@ class InventoryView(APIView):
 
         vendor = get_vendor(request.user.pk)
         if not vendor or str(vendor["_id"]) != product["vendor_id"]:
-            return Response({"success": False, "message": "you can only update inventory for your own products"}, status=403)
+            return Response(
+                {"success": False, "message": "you can only update inventory for your own products"},
+                status=403,
+            )
 
         try:
             quantity = int(clean(request.data).get("quantity"))
@@ -341,15 +344,15 @@ class ImageUploadView(APIView):
             return Response({"success": False, "message": "image file is required"}, status=400)
 
         cloudinary.config(
-            cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME"),
-            api_key    = os.getenv("CLOUDINARY_API_KEY"),
-            api_secret = os.getenv("CLOUDINARY_API_SECRET"),
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+            api_key=os.getenv("CLOUDINARY_API_KEY"),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET"),
         )
 
         result = cloudinary.uploader.upload(
             image,
-            folder         = "ecommerce/products",
-            transformation = [{"width": 800, "height": 800, "crop": "limit"}],
+            folder="ecommerce/products",
+            transformation=[{"width": 800, "height": 800, "crop": "limit"}],
         )
 
         return Response({

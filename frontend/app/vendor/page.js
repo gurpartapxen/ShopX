@@ -288,7 +288,7 @@ export default function VendorDashboard() {
 
                     {vendor && !vendor.is_approved && (
                         <div className="warning-banner">
-                            ⚠ Your store is pending admin approval. Products won't be visible until approved.
+                            ⚠ Your store is pending admin approval. Products won&apos;t be visible until approved.
                         </div>
                     )}
 

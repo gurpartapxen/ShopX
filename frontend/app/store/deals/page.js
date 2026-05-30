@@ -156,7 +156,7 @@ export default function DealsPage() {
                             <div className="empty">
                                 <div className="empty-icon">🎉</div>
                                 <div className="empty-h">No deals right now</div>
-                                <div className="empty-p">Vendors haven't added discounts yet. Check back soon!</div>
+                                <div className="empty-p">Vendors haven&apos;t added discounts yet. Check back soon!</div>
                             </div>
                         ) : (
                             filtered.map((p) => (
