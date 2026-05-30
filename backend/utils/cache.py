@@ -12,7 +12,8 @@ VENDOR_TTL         = 10 * 60
 
 def product_list_key(query_params: dict) -> str:
     digest = hashlib.md5(
-        json.dumps(query_params, sort_keys=True).encode()
+        json.dumps(query_params, sort_keys=True).encode(),
+        usedforsecurity=False,
     ).hexdigest()[:16]
     return f"products:list:{digest}"
 
