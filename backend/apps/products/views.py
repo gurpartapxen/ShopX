@@ -10,13 +10,17 @@ import re
 from django.core.cache import cache
 
 from utils.db import products_col, vendors_col, inventory_col, get_db
-from utils.helpers import to_str_id, to_object_id
+from utils.helpers import to_str_id, to_object_id, first_error
 from utils.permissions import require_role
 from utils.sanitize import clean
 from utils.cache import (
     product_list_key, product_detail_key,
     bust_product, bust_product_detail, bust_product_lists,
     PRODUCT_LIST_TTL, PRODUCT_DETAIL_TTL,
+)
+from apps.products.serializers import (
+    ProductCreateSerializer, ProductUpdateSerializer,
+    InventorySerializer, ReviewSerializer,
 )
 
 
@@ -147,39 +151,22 @@ class ProductListCreateView(APIView):
                 "message": "your vendor account must be approved before adding products"
             }, status=403)
 
-        data     = clean(request.data)
-        name     = data.get("name",     "").strip()
-        price    = data.get("price")
-        category = data.get("category", "").strip()
-
-        if not name:
-            return Response({"success": False, "message": "name is required"}, status=400)
-        if not category:
-            return Response({"success": False, "message": "category is required"}, status=400)
-
-        try:
-            price = float(price)
-            if price < 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response({"success": False, "message": "price must be a positive number"}, status=400)
-
-        try:
-            discount = max(0, min(90, int(data.get("discount", 0) or 0)))
-        except (TypeError, ValueError):
-            discount = 0
+        serializer = ProductCreateSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        data = serializer.validated_data
 
         vendor_id = str(vendor["_id"])
 
         product_doc = {
             "vendor_id":   vendor_id,
-            "name":        name,
-            "description": data.get("description", "").strip(),
-            "price":       price,
-            "discount":    discount,
-            "category":    category,
-            "images":      data.get("images", []),
-            "tags":        data.get("tags",   []),
+            "name":        data["name"].strip(),
+            "description": data["description"].strip(),
+            "price":       data["price"],
+            "discount":    data["discount"],
+            "category":    data["category"].strip(),
+            "images":      data["images"],
+            "tags":        data["tags"],
             "is_active":   True,
             "created_at":  datetime.utcnow(),
             "updated_at":  datetime.utcnow(),
@@ -191,7 +178,7 @@ class ProductListCreateView(APIView):
         inventory_col().insert_one({
             "product_id": product_id,
             "vendor_id":  vendor_id,
-            "quantity":   int(data.get("quantity", 0)),
+            "quantity":   data["quantity"],
             "updated_at": datetime.utcnow(),
         })
 
@@ -258,11 +245,10 @@ class ProductDetailView(APIView):
         if not vendor or str(vendor["_id"]) != product["vendor_id"]:
             return Response({"success": False, "message": "you can only edit your own products"}, status=403)
 
-        allowed = {"name", "description", "price", "discount", "category", "images", "tags"}
-        updates = {k: v for k, v in clean(request.data).items() if k in allowed}
-
-        if not updates:
-            return Response({"success": False, "message": "no valid fields to update"}, status=400)
+        serializer = ProductUpdateSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        updates = dict(serializer.validated_data)
 
         updates["updated_at"] = datetime.utcnow()
         products_col().update_one({"_id": to_object_id(product_id)}, {"$set": updates})
@@ -315,12 +301,10 @@ class InventoryView(APIView):
                 status=403,
             )
 
-        try:
-            quantity = int(clean(request.data).get("quantity"))
-            if quantity < 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response({"success": False, "message": "quantity must be a non-negative integer"}, status=400)
+        serializer = InventorySerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        quantity = serializer.validated_data["quantity"]
 
         inventory_col().update_one(
             {"product_id": product_id},
@@ -420,17 +404,11 @@ class ProductReviewsView(APIView):
                 "message": "you have already reviewed this product"
             }, status=400)
 
-        data = clean(request.data)
-        try:
-            rating = int(data.get("rating"))
-            if not 1 <= rating <= 5:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response({"success": False, "message": "rating must be between 1 and 5"}, status=400)
-
-        comment = data.get("comment", "").strip()
-        if len(comment) > 1000:
-            return Response({"success": False, "message": "comment too long (max 1000 chars)"}, status=400)
+        serializer = ReviewSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        rating  = serializer.validated_data["rating"]
+        comment = serializer.validated_data["comment"].strip()
 
         review_doc = {
             "product_id": product_id,

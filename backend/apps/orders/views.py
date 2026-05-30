@@ -9,9 +9,13 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from utils.db import orders_col, products_col, inventory_col, vendors_col, get_db
-from utils.helpers import to_str_id, to_object_id
+from utils.helpers import to_str_id, to_object_id, first_error
 from utils.permissions import require_role
 from utils.sanitize import clean
+from apps.orders.serializers import (
+    CheckoutSerializer, CouponValidateSerializer,
+    CouponCreateSerializer, CouponUpdateSerializer,
+)
 
 
 class CheckoutRateThrottle(UserRateThrottle):
@@ -33,12 +37,11 @@ def coupons_col():
 class CouponValidateView(APIView):
     @require_role("customer", "vendor", "admin")
     def post(self, request):
-        data  = clean(request.data)
-        code  = data.get("code", "").strip().upper()
-        total = float(data.get("total", 0))
-
-        if not code:
-            return Response({"success": False, "message": "coupon code is required"}, status=400)
+        serializer = CouponValidateSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        code  = serializer.validated_data["code"]
+        total = serializer.validated_data["total"]
 
         coupon = coupons_col().find_one({"code": code, "is_active": True})
         if not coupon:
@@ -95,13 +98,12 @@ class CheckoutView(APIView):
     @require_role("customer", "vendor", "admin")
     def post(self, request):
         user_id     = request.user.pk
-        data        = clean(request.data)
-        items       = data.get("items", [])
-        shipping    = data.get("shipping_address", {})
-        coupon_code = data.get("coupon_code", "").strip().upper()
-
-        if not items:
-            return Response({"success": False, "message": "cart is empty"}, status=400)
+        serializer  = CheckoutSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        items       = serializer.validated_data["items"]
+        shipping    = serializer.validated_data["shipping_address"]
+        coupon_code = serializer.validated_data["coupon_code"].strip().upper()
 
         enriched  = []
         vendor_id = None
@@ -401,30 +403,27 @@ class AdminCouponView(APIView):
 
     @require_role("admin")
     def post(self, request):
-        data = clean(request.data)
-        code = data.get("code", "").strip().upper()
-        if not code:
-            return Response({"success": False, "message": "code is required"}, status=400)
+        serializer = CouponCreateSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        data = serializer.validated_data
+        code = data["code"]
 
         if coupons_col().find_one({"code": code}):
             return Response({"success": False, "message": "coupon code already exists"}, status=400)
 
-        discount_type  = data.get("discount_type", "percentage")
-        discount_value = float(data.get("discount_value", 0))
-        expires_at_str = data.get("expires_at")
-
         coupon_doc = {
             "code":               code,
-            "description":        data.get("description", ""),
-            "discount_type":      discount_type,
-            "discount_value":     discount_value,
-            "max_discount_amount": data.get("max_discount_amount"),
-            "min_order_amount":   float(data.get("min_order_amount", 0)),
-            "max_uses":           data.get("max_uses"),
+            "description":        data["description"],
+            "discount_type":      data["discount_type"],
+            "discount_value":     data["discount_value"],
+            "max_discount_amount": data["max_discount_amount"],
+            "min_order_amount":   data["min_order_amount"],
+            "max_uses":           data["max_uses"],
             "used_count":         0,
             "used_by":            [],
             "is_active":          True,
-            "expires_at":         datetime.fromisoformat(expires_at_str) if expires_at_str else None,
+            "expires_at":         data["expires_at"],
             "created_at":         datetime.utcnow(),
         }
 
@@ -443,9 +442,10 @@ class AdminCouponDetailView(APIView):
         if not coupon:
             return Response({"success": False, "message": "coupon not found"}, status=404)
 
-        allowed = {"description", "discount_type", "discount_value", "max_discount_amount",
-                   "min_order_amount", "max_uses", "is_active"}
-        updates = {k: v for k, v in clean(request.data).items() if k in allowed}
+        serializer = CouponUpdateSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        updates = dict(serializer.validated_data)
         if updates:
             coupons_col().update_one({"code": code}, {"$set": updates})
 

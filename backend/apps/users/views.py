@@ -9,10 +9,14 @@ from django.conf import settings
 from datetime import datetime
 
 from utils.db import users_col
-from utils.helpers import to_str_id, to_object_id
+from utils.helpers import to_str_id, to_object_id, first_error
 from utils.sanitize import clean
 from utils.csrf import generate_csrf_token, csrf_valid, CSRF_COOKIE_NAME
 from apps.users.authentication import MongoJWTAuthentication
+from apps.users.serializers import (
+    RegisterSerializer, LoginSerializer,
+    ChangePasswordSerializer, ProfileUpdateSerializer,
+)
 
 REFRESH_MAX_AGE = 60 * 60 * 24 * 7   # 7 days, matches REFRESH_TOKEN_LIFETIME
 
@@ -85,20 +89,15 @@ class RegisterView(APIView):
     throttle_classes    = [RegisterRateThrottle]
 
     def post(self, request):
-        data     = clean(request.data)
-        name     = data.get("name",     "").strip()
-        email    = data.get("email",    "").strip().lower()
-        password = data.get("password", "")
-        role     = data.get("role",     "customer")
+        serializer = RegisterSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        data = serializer.validated_data
 
-        if not name:
-            return Response({"success": False, "message": "name is required"}, status=400)
-        if not email:
-            return Response({"success": False, "message": "email is required"}, status=400)
-        if not password or len(password) < 8:
-            return Response({"success": False, "message": "password must be at least 8 characters"}, status=400)
-        if role not in ("customer", "vendor", "admin"):
-            return Response({"success": False, "message": "role must be customer, vendor, or admin"}, status=400)
+        name     = data["name"]
+        email    = data["email"]
+        password = data["password"]
+        role     = data["role"]
 
         if users_col().find_one({"email": email}):
             return Response({"success": False, "message": "an account with this email already exists"}, status=400)
@@ -151,12 +150,11 @@ class LoginView(APIView):
     throttle_classes   = [LoginRateThrottle]
 
     def post(self, request):
-        data     = clean(request.data)
-        email    = data.get("email",    "").strip().lower()
-        password = data.get("password", "")
-
-        if not email or not password:
-            return Response({"success": False, "message": "email and password are required"}, status=400)
+        serializer = LoginSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        email    = serializer.validated_data["email"]
+        password = serializer.validated_data["password"]
 
         user = users_col().find_one({"email": email})
 
@@ -250,13 +248,17 @@ class ProfileView(APIView):
         return Response({"success": True, "data": to_str_id(user)})
 
     def patch(self, request):
-        user_id        = request.user.pk
-        data           = clean(request.data)
+        user_id    = request.user.pk
+        serializer = ProfileUpdateSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        data = serializer.validated_data
+
         allowed_fields = {"name", "phone", "address", "city", "pincode", "state"}
         updates        = {k: v for k, v in data.items() if k in allowed_fields}
 
         # handle email update separately (check uniqueness)
-        new_email = data.get("email", "").strip().lower()
+        new_email = data.get("email")
         if new_email:
             existing = users_col().find_one({"email": new_email})
             if existing and str(existing["_id"]) != user_id:
@@ -286,15 +288,11 @@ class ChangePasswordView(APIView):
 
     def post(self, request):
         user_id      = request.user.pk
-        data         = clean(request.data)
-        old_password = data.get("old_password", "")
-        new_password = data.get("new_password", "")
-
-        if not old_password or not new_password:
-            return Response({"success": False, "message": "old and new password are required"}, status=400)
-
-        if len(new_password) < 8:
-            return Response({"success": False, "message": "new password must be at least 8 characters"}, status=400)
+        serializer   = ChangePasswordSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        old_password = serializer.validated_data["old_password"]
+        new_password = serializer.validated_data["new_password"]
 
         user = users_col().find_one({"_id": to_object_id(user_id)})
         if not user:

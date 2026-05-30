@@ -123,3 +123,112 @@ def create_indexes():
     db["coupons"].create_index("is_active",                           name="coupons_is_active")
 
     print("All indexes created successfully.")
+
+    apply_schema_validators()
+
+
+# ── JSON Schema validation ─────────────────────────────────────────────────────
+
+_SCHEMAS = {
+    "users": {
+        "bsonType": "object",
+        "required": ["name", "email", "password", "role", "is_active"],
+        "properties": {
+            "name":      {"bsonType": "string"},
+            "email":     {"bsonType": "string"},
+            "password":  {"bsonType": "string"},
+            "role":      {"enum": ["customer", "vendor", "admin"]},
+            "is_active": {"bsonType": "bool"},
+        },
+    },
+    "vendors": {
+        "bsonType": "object",
+        "required": ["user_id", "store_name", "is_approved", "is_active"],
+        "properties": {
+            "user_id":     {"bsonType": "string"},
+            "store_name":  {"bsonType": "string"},
+            "is_approved": {"bsonType": "bool"},
+            "is_active":   {"bsonType": "bool"},
+        },
+    },
+    "products": {
+        "bsonType": "object",
+        "required": ["vendor_id", "name", "price", "category", "is_active"],
+        "properties": {
+            "vendor_id": {"bsonType": "string"},
+            "name":      {"bsonType": "string"},
+            "price":     {"bsonType": ["int", "long", "double", "decimal"]},
+            "discount":  {"bsonType": ["int", "long", "double"]},
+            "category":  {"bsonType": "string"},
+            "images":    {"bsonType": "array"},
+            "tags":      {"bsonType": "array"},
+            "is_active": {"bsonType": "bool"},
+        },
+    },
+    "inventory": {
+        "bsonType": "object",
+        "required": ["product_id", "quantity"],
+        "properties": {
+            "product_id": {"bsonType": "string"},
+            "quantity":   {"bsonType": ["int", "long"]},
+            "vendor_id":  {"bsonType": "string"},
+        },
+    },
+    "orders": {
+        "bsonType": "object",
+        "required": ["user_id", "items", "total", "status", "payment_status"],
+        "properties": {
+            "user_id":        {"bsonType": "string"},
+            "items":          {"bsonType": "array"},
+            "total":          {"bsonType": ["int", "long", "double", "decimal"]},
+            "status":         {"enum": ["pending", "processing", "shipped", "delivered", "cancelled"]},
+            "payment_status": {"enum": ["unpaid", "paid"]},
+        },
+    },
+    "reviews": {
+        "bsonType": "object",
+        "required": ["product_id", "user_id", "rating"],
+        "properties": {
+            "product_id": {"bsonType": "string"},
+            "user_id":    {"bsonType": "string"},
+            "rating":     {"bsonType": "int", "minimum": 1, "maximum": 5},
+            "comment":    {"bsonType": "string"},
+        },
+    },
+    "coupons": {
+        "bsonType": "object",
+        "required": ["code", "discount_type", "discount_value", "is_active"],
+        "properties": {
+            "code":           {"bsonType": "string"},
+            "discount_type":  {"enum": ["percentage", "fixed"]},
+            "discount_value": {"bsonType": ["int", "long", "double"]},
+            "is_active":      {"bsonType": "bool"},
+        },
+    },
+}
+
+
+def apply_schema_validators():
+    db = get_db()
+    existing = set(db.list_collection_names())
+    print("Applying JSON Schema validators...")
+
+    for name, schema in _SCHEMAS.items():
+        validator = {"$jsonSchema": schema}
+        if name in existing:
+            db.command(
+                "collMod", name,
+                validator=validator,
+                validationLevel="moderate",
+                validationAction="error",
+            )
+        else:
+            db.create_collection(
+                name,
+                validator=validator,
+                validationLevel="moderate",
+                validationAction="error",
+            )
+        print(f"  - {name}")
+
+    print("All schema validators applied.")

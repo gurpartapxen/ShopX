@@ -7,10 +7,11 @@ import re
 from django.core.cache import cache
 
 from utils.db import vendors_col
-from utils.helpers import to_str_id, to_object_id
+from utils.helpers import to_str_id, to_object_id, first_error
 from utils.permissions import require_role
 from utils.sanitize import clean
 from utils.cache import vendor_public_key, bust_vendor, VENDOR_TTL
+from apps.vendors.serializers import VendorOnboardSerializer, VendorUpdateSerializer
 
 
 def slugify(name: str) -> str:
@@ -24,13 +25,12 @@ class VendorOnboardView(APIView):
     @require_role("vendor")
     def post(self, request):
         user_id     = request.user.pk
-        data        = clean(request.data)
-        store_name  = data.get("store_name",  "").strip()
-        description = data.get("description", "").strip()
-        phone       = data.get("phone",       "").strip()
-
-        if not store_name:
-            return Response({"success": False, "message": "store_name is required"}, status=400)
+        serializer  = VendorOnboardSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        store_name  = serializer.validated_data["store_name"]
+        description = serializer.validated_data["description"].strip()
+        phone       = serializer.validated_data["phone"].strip()
 
         if vendors_col().find_one({"user_id": user_id}):
             return Response({"success": False, "message": "you already have a vendor profile"}, status=400)
@@ -79,11 +79,10 @@ class VendorProfileView(APIView):
         if not vendor:
             return Response({"success": False, "message": "vendor profile not found"}, status=404)
 
-        allowed = {"store_name", "description", "phone", "logo_url"}
-        updates = {k: v for k, v in clean(request.data).items() if k in allowed}
-
-        if not updates:
-            return Response({"success": False, "message": "no valid fields to update"}, status=400)
+        serializer = VendorUpdateSerializer(data=clean(request.data))
+        if not serializer.is_valid():
+            return Response({"success": False, "message": first_error(serializer)}, status=400)
+        updates = dict(serializer.validated_data)
 
         updates["updated_at"] = datetime.utcnow()
         vendors_col().update_one({"user_id": user_id}, {"$set": updates})
