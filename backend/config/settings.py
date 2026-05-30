@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
+from corsheaders.defaults import default_headers
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -155,6 +156,8 @@ CORS_ALLOWED_ORIGINS = [
     os.getenv("FRONTEND_URL", "http://localhost:3000"),
 ]
 CORS_ALLOW_CREDENTIALS = True
+# Permit the double-submit CSRF header on cross-origin requests (and its preflight)
+CORS_ALLOW_HEADERS = (*default_headers, "x-csrf-token")
 
 
 # ── Cache (Redis / LocMemCache fallback) ──────────────────────────────────────

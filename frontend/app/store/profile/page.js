@@ -24,7 +24,7 @@ export default function ProfilePage() {
     const [showOld, setShowOld] = useState(false);
     const [showNew, setShowNew] = useState(false);
 
-    const { user, loading: authLoading, logout } = useAuth();
+    const { user, loading: authLoading, logout, updateUser } = useAuth();
     const router = useRouter();
 
     useEffect(() => {
@@ -64,10 +64,9 @@ export default function ProfilePage() {
         setError("");
         setSuccess("");
         try {
-            const res = await authAPI.updateProfile(form);
-            // update localStorage user
-            const updatedUser = { ...user, name: form.name, email: form.email };
-            localStorage.setItem("user", JSON.stringify(updatedUser));
+            await authAPI.updateProfile(form);
+            // reflect the change in the in-memory auth user (no client-side storage)
+            updateUser({ name: form.name, email: form.email });
             setSuccess("Profile updated successfully!");
             setTimeout(() => setSuccess(""), 3000);
         } catch (err) {

@@ -24,15 +24,16 @@ class MongoUser:
 class MongoJWTAuthentication(BaseAuthentication):
 
     def authenticate(self, request):
-        # Prefer HttpOnly cookie (XSS-safe); fall back to Authorization header
-        raw_token = request.COOKIES.get("access_token")
-
-        if not raw_token:
-            auth_header = request.META.get("HTTP_AUTHORIZATION", "")
-            parts = auth_header.split()
-            if len(parts) != 2 or parts[0].lower() != "bearer":
-                return None
-            raw_token = parts[1]
+        # Access tokens are accepted ONLY from the Authorization header (Bearer).
+        # We deliberately do NOT read the access token from a cookie: a custom
+        # header cannot be forged by a cross-site request, so every data endpoint
+        # stays CSRF-proof. Cookies are used solely for the refresh token, and the
+        # /auth/refresh/ endpoint guards itself with a double-submit CSRF token.
+        auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+        parts = auth_header.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return None
+        raw_token = parts[1]
 
         try:
             validated_token = AccessToken(raw_token)

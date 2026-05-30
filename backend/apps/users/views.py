@@ -11,7 +11,21 @@ from datetime import datetime
 from utils.db import users_col
 from utils.helpers import to_str_id, to_object_id
 from utils.sanitize import clean
+from utils.csrf import generate_csrf_token, csrf_valid, CSRF_COOKIE_NAME
 from apps.users.authentication import MongoJWTAuthentication
+
+REFRESH_MAX_AGE = 60 * 60 * 24 * 7   # 7 days, matches REFRESH_TOKEN_LIFETIME
+
+
+def _cookie_flags():
+    """SameSite/Secure flags shared by all session cookies.
+
+    Production : SameSite=None; Secure  — cross-site (Vercel ↔ Render) needs None.
+    Development: SameSite=Lax;  insecure — Chrome rejects None without Secure on
+                 HTTP, and Lax is sent on same-site localhost cross-port requests.
+    """
+    is_prod = not settings.DEBUG
+    return {"secure": is_prod, "samesite": "None" if is_prod else "Lax", "path": "/"}
 
 
 # ── Custom throttle scopes ────────────────────────────────────────────────────
@@ -44,26 +58,26 @@ def generate_tokens(user_id: str) -> dict:
     }
 
 
-def _set_auth_cookies(response, tokens: dict) -> None:
-    """Attach access + refresh tokens as HttpOnly cookies to a DRF Response.
+def _set_session_cookies(response, refresh_token: str) -> None:
+    """Set the session cookies on a login/register response.
 
-    SameSite strategy:
-      - Production  : SameSite=None; Secure — required for cross-domain (Vercel → Render).
-      - Development : SameSite=Lax;  no Secure — Chrome rejects SameSite=None without
-        Secure on HTTP. Lax works fine on localhost because localhost:3000 and
-        localhost:8000 share the same site (port is not part of the site definition),
-        so the cookie IS sent on cross-port requests including POST.
+    Only two cookies — the access token is NEVER stored in a cookie; it lives in
+    the SPA's memory and is sent via the Authorization header.
+
+      refresh_token : HttpOnly  — JS can't read it, so XSS can't steal the long-lived token.
+      csrf_token    : readable  — the SPA reads it and echoes it in the X-CSRF-Token
+                                  header so /auth/refresh/ can verify the request origin.
     """
-    is_prod  = not settings.DEBUG
-    samesite = "None" if is_prod else "Lax"
-    common   = dict(httponly=True, secure=is_prod, samesite=samesite, path="/")
-    response.set_cookie("access_token",  tokens["access"],  max_age=60 * 15,           **common)
-    response.set_cookie("refresh_token", tokens["refresh"], max_age=60 * 60 * 24 * 7,  **common)
+    flags = _cookie_flags()
+    response.set_cookie("refresh_token", refresh_token, max_age=REFRESH_MAX_AGE,
+                        httponly=True, **flags)
+    response.set_cookie(CSRF_COOKIE_NAME, generate_csrf_token(), max_age=REFRESH_MAX_AGE,
+                        httponly=False, **flags)
 
 
-def _clear_auth_cookies(response) -> None:
-    response.delete_cookie("access_token",  path="/")
+def _clear_session_cookies(response) -> None:
     response.delete_cookie("refresh_token", path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
 
 
 class RegisterView(APIView):
@@ -125,10 +139,10 @@ class RegisterView(APIView):
             "message": "account created successfully",
             "data": {
                 "user":   {"id": user_id, "name": name, "email": email, "role": role},
-                "tokens": tokens,
+                "access": tokens["access"],   # in-memory only; refresh stays in the cookie
             }
         }, status=201)
-        _set_auth_cookies(response, tokens)
+        _set_session_cookies(response, tokens["refresh"])
         return response
 
 
@@ -165,10 +179,10 @@ class LoginView(APIView):
                     "email": user["email"],
                     "role":  user["role"],
                 },
-                "tokens": tokens,
+                "access": tokens["access"],   # in-memory only; refresh stays in the cookie
             }
         })
-        _set_auth_cookies(response, tokens)
+        _set_session_cookies(response, tokens["refresh"])
         return response
 
 
@@ -177,32 +191,49 @@ class RefreshTokenView(APIView):
     throttle_classes   = [RefreshRateThrottle]
 
     def post(self, request):
-        # Accept refresh token from HttpOnly cookie first, body as fallback
-        refresh_token = request.COOKIES.get("refresh_token") or request.data.get("refresh")
+        # CSRF gate: this endpoint is authenticated purely by the refresh cookie,
+        # so it needs the double-submit token to prove the request came from our SPA.
+        if not csrf_valid(request):
+            return Response({"success": False, "message": "CSRF validation failed"}, status=403)
+
+        # Refresh token is read ONLY from the HttpOnly cookie — never the body.
+        refresh_token = request.COOKIES.get("refresh_token")
         if not refresh_token:
-            return Response({"success": False, "message": "refresh token is required"}, status=400)
+            return Response({"success": False, "message": "no active session"}, status=401)
+
         try:
-            token      = RefreshToken(refresh_token)
-            new_access = str(token.access_token)
-            response   = Response({"success": True, "data": {"access": new_access}})
-            # Rotate the access cookie using the same SameSite strategy as login
-            is_prod  = not settings.DEBUG
-            samesite = "None" if is_prod else "Lax"
-            response.set_cookie(
-                "access_token", new_access, max_age=60 * 15,
-                httponly=True, secure=is_prod, samesite=samesite, path="/",
-            )
-            return response
+            token = RefreshToken(refresh_token)
         except TokenError:
-            return Response({"success": False, "message": "invalid or expired refresh token"}, status=401)
+            return Response({"success": False, "message": "session expired — please log in again"}, status=401)
+
+        # Return the authoritative user so the SPA never has to trust client storage.
+        user_id = token.get("user_id")
+        user = users_col().find_one({"_id": to_object_id(user_id)})
+        if not user or not user.get("is_active", True):
+            return Response({"success": False, "message": "account not found or deactivated"}, status=401)
+
+        return Response({
+            "success": True,
+            "data": {
+                "access": str(token.access_token),
+                "user": {
+                    "id":    str(user["_id"]),
+                    "name":  user.get("name", ""),
+                    "email": user.get("email", ""),
+                    "role":  user.get("role", "customer"),
+                },
+            }
+        })
 
 
 class LogoutView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        # Always clear the cookies — logout must never be blockable, otherwise a
+        # stale refresh cookie would silently log the user back in on next reload.
         response = Response({"success": True, "message": "logged out successfully"})
-        _clear_auth_cookies(response)
+        _clear_session_cookies(response)
         return response
 
 

@@ -5,34 +5,51 @@ Django + Next.js + MongoDB stack without architectural rewrites.
 
 ---
 
-## 1. JWT Tokens → HttpOnly Cookies
+## 1. Token Storage → HttpOnly Cookies + In-Memory Access Token + CSRF
 
 **Problem:** Access and refresh tokens were stored in `localStorage`, readable by any JavaScript
 on the page (XSS vulnerability).
 
+**Final architecture (single source of truth, no token reachable from JS):**
+
+| Token | Where it lives | XSS can read it? |
+|-------|---------------|------------------|
+| Access token (15 min) | JS memory only, sent via `Authorization: Bearer` | only in the current tab session; gone on reload |
+| Refresh token (7 days) | HttpOnly cookie **only** — never localStorage, never request body | **No** |
+| CSRF token | non-HttpOnly cookie, echoed in `X-CSRF-Token` header | yes (by design — it's not a credential) |
+
 **What changed:**
 
-- **Backend** — `LoginView`, `RegisterView`, `RefreshTokenView` set `HttpOnly` cookies on every
-  auth response. Cookie strategy:
-  - Production (HTTPS): `SameSite=None; Secure=True` — required for cross-domain (Vercel → Render)
-  - Development (HTTP): `SameSite=Lax; Secure=False` — `localhost` ports are same-site so Lax
-    cookies are sent cross-port; Chrome accepts Lax without Secure on HTTP
-- **Backend** — `MongoJWTAuthentication` reads token from the `access_token` cookie first,
-  falls back to `Authorization: Bearer` header.
-- **Backend** — New `POST /api/auth/logout/` endpoint clears both cookies server-side.
-- **Frontend** — Access token stored in **JS module memory only** (`setAccessToken` / `clearAccessToken`
-  in `lib/api.js`). Never written to `localStorage` or `sessionStorage`.
-- **Frontend** — Refresh token stored in `localStorage` as a reliable reload fallback, and sent
-  in the request body on every refresh call. Server reads `cookie → body` in that priority, so
-  production uses the more-secure HttpOnly cookie automatically.
-- **Frontend** — `axios` instance has `withCredentials: true` so cookies are included on every
-  request automatically.
-- **Frontend** — On page reload, `AuthContext` calls `authAPI.refresh(storedRefreshToken)` using
-  the body token. If expired/missing, localStorage is cleared and the user is logged out cleanly.
+- **Backend** — Login/Register set two cookies: `refresh_token` (HttpOnly) and `csrf_token`
+  (readable). **No `access_token` cookie** — the access token is returned in the body for
+  in-memory use only. Cookie `SameSite`: `None; Secure` in prod (cross-domain Vercel ↔ Render),
+  `Lax` in dev (same-site localhost, Chrome rejects `None` without `Secure` on HTTP).
+- **Backend** — `MongoJWTAuthentication` accepts the access token **only** from the
+  `Authorization: Bearer` header (never a cookie). Because a custom header can't be forged
+  cross-site, every data endpoint is inherently CSRF-proof.
+- **Backend** — `RefreshTokenView` reads the refresh token **only** from the HttpOnly cookie
+  (no body fallback), enforces a **double-submit CSRF check** (`X-CSRF-Token` header must equal
+  the `csrf_token` cookie), and returns the **authoritative user** so the SPA never trusts
+  client storage for auth state.
+- **Backend** — `utils/csrf.py` — `generate_csrf_token()` + constant-time `csrf_valid(request)`.
+- **Backend** — `POST /api/auth/logout/` always clears both cookies (never blockable).
+- **Backend** — `CORS_ALLOW_HEADERS` extended with `x-csrf-token` so the header passes preflight.
+- **Frontend** — Access token in **JS module memory only**. `lib/api.js` attaches the Bearer
+  token + `X-CSRF-Token` header (read from the readable cookie) on every request, with a single
+  deduplicated `refreshAccessToken()` for silent 401 recovery.
+- **Frontend** — **No tokens or user object in `localStorage`.** On reload, `AuthContext` probes
+  the readable `csrf_token` cookie to decide whether a session exists, then calls `/auth/refresh/`
+  (cookie + CSRF header) to re-mint the access token and fetch the authoritative user.
 
-**Files changed:**
-`backend/apps/users/authentication.py` · `backend/apps/users/views.py` ·
-`backend/apps/users/urls.py` · `frontend/lib/api.js` · `frontend/context/AuthContext.js`
+**Why the previous localStorage-refresh + body-fallback was removed:** storing the refresh token
+in `localStorage` (or sending it in the body) re-exposed it to the exact XSS class the HttpOnly
+cookie defends against. With the dev cookie issues already fixed (§11), the cookie works on
+reload without any fallback, so the fallback was pure liability and is gone.
+
+**Files changed/created:**
+`backend/utils/csrf.py` *(new)* · `backend/apps/users/authentication.py` ·
+`backend/apps/users/views.py` · `backend/config/settings.py` ·
+`frontend/lib/api.js` · `frontend/context/AuthContext.js` · `frontend/app/store/profile/page.js`
 
 ---
 

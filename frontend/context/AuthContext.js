@@ -1,86 +1,59 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import { authAPI, setAccessToken, clearAccessToken } from "@/lib/api";
+import { authAPI, setAccessToken, clearAccessToken, hasSession } from "@/lib/api";
 
 const AuthContext = createContext(null);
 
-// Read localStorage synchronously before first render so we know whether a
-// refresh attempt is needed — avoids calling setLoading(false) inside a useEffect.
-function _readSession() {
-    if (typeof window === "undefined") return { user: null, refresh: null };
-    return {
-        user:    localStorage.getItem("user"),
-        refresh: localStorage.getItem("refresh_token"),
-    };
-}
-
 export function AuthProvider({ children }) {
-    const session = _readSession();
+    const [user, setUser] = useState(null);
+    // Start in "loading" only when a session cookie is present (so we have
+    // something to validate). Computed at first render to avoid a setState in
+    // the effect body. Nothing sensitive is read — just the csrf_token probe.
+    const [loading, setLoading] = useState(() => hasSession());
 
-    const [user,    setUser]    = useState(session.user ? JSON.parse(session.user) : null);
-    // loading=true only when we have a session to validate via the refresh endpoint
-    const [loading, setLoading] = useState(!!(session.user && session.refresh));
-
+    // On mount, re-mint the access token from the HttpOnly refresh cookie and
+    // pull the authoritative user from the server. We never trust client storage
+    // for auth state — the /refresh/ response is the single source of truth.
     useEffect(() => {
-        const savedUser    = session.user;
-        const savedRefresh = session.refresh;
+        if (!hasSession()) return;   // no cookie → not logged in, loading already false
 
-        // No persisted session — nothing to restore, loading already false
-        if (!savedUser || !savedRefresh) return;
-
-        // Exchange the refresh token for a fresh access token.
-        // Strategy (belt & suspenders):
-        //   1. Sends the stored refresh token in the request body (works everywhere,
-        //      including local dev where 127.0.0.1 ≠ localhost breaks cookie sending).
-        //   2. withCredentials: true also sends the HttpOnly cookie automatically,
-        //      so in production (HTTPS, same hostname) the more-secure cookie path
-        //      is used by the server if both arrive.
-        authAPI.refresh(savedRefresh)
+        authAPI.refresh()
             .then((res) => {
-                setAccessToken(res.data.data.access);
+                // refreshAccessToken() already stored the access token in memory
+                setUser(res.data.data.user);
             })
             .catch(() => {
-                // Token expired or revoked — force a clean state
                 clearAccessToken();
-                localStorage.removeItem("user");
-                localStorage.removeItem("refresh_token");
                 setUser(null);
             })
             .finally(() => setLoading(false));
     }, []);
 
     const login = async (email, password) => {
-        const res  = await authAPI.login({ email, password });
-        const data = res.data.data;
-
-        setAccessToken(data.tokens.access);                              // memory only
-        localStorage.setItem("refresh_token", data.tokens.refresh);     // survives reload
-        localStorage.setItem("user",          JSON.stringify(data.user)); // non-sensitive UI data
+        const { data } = (await authAPI.login({ email, password })).data;
+        setAccessToken(data.access);   // memory only; refresh + csrf live in cookies
         setUser(data.user);
         return data.user;
     };
 
     const register = async (formData) => {
-        const res  = await authAPI.register(formData);
-        const data = res.data.data;
-
-        setAccessToken(data.tokens.access);
-        localStorage.setItem("refresh_token", data.tokens.refresh);
-        localStorage.setItem("user",          JSON.stringify(data.user));
+        const { data } = (await authAPI.register(formData)).data;
+        setAccessToken(data.access);
         setUser(data.user);
         return data.user;
     };
 
+    // Merge updated fields into the in-memory user (e.g. after a profile edit).
+    const updateUser = (fields) => setUser((prev) => (prev ? { ...prev, ...fields } : prev));
+
     const logout = async () => {
         try {
-            await authAPI.logout();   // clears HttpOnly cookies server-side
+            await authAPI.logout();   // server clears the HttpOnly refresh + csrf cookies
         } catch {
-            // Proceed with client-side cleanup even if the request fails
+            // Proceed with client cleanup even if the request fails
         }
         clearAccessToken();
-        localStorage.removeItem("refresh_token");
-        localStorage.removeItem("user");
         setUser(null);
         window.location.href = "/login";
     };
@@ -92,6 +65,7 @@ export function AuthProvider({ children }) {
             login,
             register,
             logout,
+            updateUser,
             isAuth: !!user,
         }}>
             {children}

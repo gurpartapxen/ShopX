@@ -1,36 +1,72 @@
 import axios from "axios";
 
-// ── In-memory token store ─────────────────────────────────────────────────────
-// Access token lives only in JS memory — not localStorage, not sessionStorage.
-// XSS can read memory during the current session but cannot persist it across
-// page loads, and cannot access the HttpOnly refresh cookie at all.
+const BASE = process.env.NEXT_PUBLIC_API_URL;
+
+// ── In-memory access-token store ──────────────────────────────────────────────
+// The access token lives ONLY in JS memory — never localStorage/sessionStorage.
+// It vanishes on reload (we re-mint it from the HttpOnly refresh cookie), so XSS
+// can't persist it, and the refresh token is never reachable from JS at all.
 let _accessToken = null;
 export const setAccessToken   = (token) => { _accessToken = token; };
 export const clearAccessToken = ()       => { _accessToken = null; };
 export const getAccessToken   = ()       =>   _accessToken;
 
+// ── CSRF token (double-submit) ────────────────────────────────────────────────
+// Read the non-HttpOnly csrf_token cookie and echo it in the X-CSRF-Token header.
+// The server requires header == cookie on the cookie-authenticated /refresh/ call.
+export function getCsrfToken() {
+    if (typeof document === "undefined") return null;
+    const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+}
+
+export function hasSession() {
+    // The readable csrf_token cookie is our "a session probably exists" probe —
+    // it's set alongside the HttpOnly refresh cookie at login. No token is exposed.
+    return getCsrfToken() !== null;
+}
+
 // ── Axios instance ────────────────────────────────────────────────────────────
 const api = axios.create({
-    baseURL:      process.env.NEXT_PUBLIC_API_URL,
-    headers:      { "Content-Type": "application/json" },
-    timeout:      60000,
-    withCredentials: true,   // send HttpOnly cookies on every request
+    baseURL:         BASE,
+    headers:         { "Content-Type": "application/json" },
+    timeout:         60000,
+    withCredentials: true,   // send the HttpOnly refresh cookie on every request
 });
 
-// ── Request interceptor ───────────────────────────────────────────────────────
+// ── Request interceptor — attach Bearer access token + CSRF header ────────────
 api.interceptors.request.use(
     (config) => {
-        if (_accessToken) {
-            config.headers.Authorization = `Bearer ${_accessToken}`;
-        }
+        if (_accessToken) config.headers.Authorization = `Bearer ${_accessToken}`;
+        const csrf = getCsrfToken();
+        if (csrf) config.headers["X-CSRF-Token"] = csrf;
         return config;
     },
     (error) => Promise.reject(error)
 );
 
-// ── Response interceptor — silent token refresh on 401 ───────────────────────
-let _refreshPromise = null;   // deduplicate concurrent refresh attempts
+// ── Deduplicated token refresh ────────────────────────────────────────────────
+// Uses a bare axios call (not `api`) to avoid the response interceptor recursing.
+// Sends only cookies + the CSRF header — no token in the body.
+let _refreshPromise = null;
 
+export function refreshAccessToken() {
+    if (!_refreshPromise) {
+        _refreshPromise = axios
+            .post(`${BASE}/auth/refresh/`, {}, {
+                withCredentials: true,
+                headers: { "X-CSRF-Token": getCsrfToken() || "" },
+            })
+            .then((res) => {
+                setAccessToken(res.data.data.access);
+                return res;
+            })
+            .finally(() => { _refreshPromise = null; });
+    }
+    return _refreshPromise;
+}
+
+// ── Response interceptor — silent refresh on 401 ─────────────────────────────
 api.interceptors.response.use(
     (response) => response,
     async (error) => {
@@ -38,31 +74,13 @@ api.interceptors.response.use(
 
         if (error.response?.status === 401 && !original._retry) {
             original._retry = true;
-
             try {
-                // Reuse an in-flight refresh if one is already happening
-                if (!_refreshPromise) {
-                    const storedRefresh = typeof window !== "undefined"
-                        ? localStorage.getItem("refresh_token")
-                        : null;
-                    _refreshPromise = axios
-                        .post(
-                            `${process.env.NEXT_PUBLIC_API_URL}/auth/refresh/`,
-                            storedRefresh ? { refresh: storedRefresh } : {},
-                            { withCredentials: true }
-                        )
-                        .finally(() => { _refreshPromise = null; });
-                }
-
-                const res      = await _refreshPromise;
-                const newToken = res.data.data.access;
-                setAccessToken(newToken);
-                original.headers.Authorization = `Bearer ${newToken}`;
+                await refreshAccessToken();              // sets _accessToken on success
+                original.headers.Authorization = `Bearer ${_accessToken}`;
                 return api(original);
             } catch {
                 clearAccessToken();
                 if (typeof window !== "undefined") {
-                    localStorage.removeItem("user");
                     window.location.href = "/login";
                 }
             }
@@ -74,13 +92,10 @@ api.interceptors.response.use(
 
 // ── API surface ───────────────────────────────────────────────────────────────
 export const authAPI = {
-    register:       (data)         => api.post("/auth/register/",        data),
-    login:          (data)         => api.post("/auth/login/",           data),
-    // refreshToken is sent in the body as a fallback for dev (cross-origin localhost).
-    // In production the HttpOnly cookie is sent automatically by the browser.
-    // The Django view accepts whichever arrives first: cookie → body.
-    refresh:        (refreshToken) => api.post("/auth/refresh/", refreshToken ? { refresh: refreshToken } : {}),
-    logout:         ()             => api.post("/auth/logout/",          {}),
+    register:       (data) => api.post("/auth/register/",        data),
+    login:          (data) => api.post("/auth/login/",           data),
+    refresh:        ()     => refreshAccessToken(),
+    logout:         ()     => api.post("/auth/logout/",          {}),
     profile:        ()     => api.get("/auth/profile/"),
     updateProfile:  (data) => api.patch("/auth/profile/",        data),
     changePassword: (data) => api.post("/auth/change-password/", data),
