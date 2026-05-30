@@ -3,13 +3,30 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework.throttling import AnonRateThrottle
 from django.contrib.auth.hashers import make_password, check_password
+from django.conf import settings
 from datetime import datetime
 
 from utils.db import users_col
 from utils.helpers import to_str_id, to_object_id
+from utils.sanitize import clean
 from apps.users.authentication import MongoJWTAuthentication
 
+
+# ── Custom throttle scopes ────────────────────────────────────────────────────
+
+class LoginRateThrottle(AnonRateThrottle):
+    scope = "login"
+
+class RegisterRateThrottle(AnonRateThrottle):
+    scope = "register"
+
+class RefreshRateThrottle(AnonRateThrottle):
+    scope = "refresh_token"
+
+
+# ── Token helpers ─────────────────────────────────────────────────────────────
 
 def generate_tokens(user_id: str) -> dict:
     class FakeUser:
@@ -25,11 +42,34 @@ def generate_tokens(user_id: str) -> dict:
     }
 
 
+def _set_auth_cookies(response, tokens: dict) -> None:
+    """Attach access + refresh tokens as HttpOnly cookies to a DRF Response.
+
+    SameSite strategy:
+      - Production  : SameSite=None; Secure — required for cross-domain (Vercel → Render).
+      - Development : SameSite=Lax;  no Secure — Chrome rejects SameSite=None without
+        Secure on HTTP. Lax works fine on localhost because localhost:3000 and
+        localhost:8000 share the same site (port is not part of the site definition),
+        so the cookie IS sent on cross-port requests including POST.
+    """
+    is_prod  = not settings.DEBUG
+    samesite = "None" if is_prod else "Lax"
+    common   = dict(httponly=True, secure=is_prod, samesite=samesite, path="/")
+    response.set_cookie("access_token",  tokens["access"],  max_age=60 * 15,           **common)
+    response.set_cookie("refresh_token", tokens["refresh"], max_age=60 * 60 * 24 * 7,  **common)
+
+
+def _clear_auth_cookies(response) -> None:
+    response.delete_cookie("access_token",  path="/")
+    response.delete_cookie("refresh_token", path="/")
+
+
 class RegisterView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes  = [AllowAny]
+    throttle_classes    = [RegisterRateThrottle]
 
     def post(self, request):
-        data     = request.data
+        data     = clean(request.data)
         name     = data.get("name",     "").strip()
         email    = data.get("email",    "").strip().lower()
         password = data.get("password", "")
@@ -39,8 +79,8 @@ class RegisterView(APIView):
             return Response({"success": False, "message": "name is required"}, status=400)
         if not email:
             return Response({"success": False, "message": "email is required"}, status=400)
-        if not password or len(password) < 6:
-            return Response({"success": False, "message": "password must be at least 6 characters"}, status=400)
+        if not password or len(password) < 8:
+            return Response({"success": False, "message": "password must be at least 8 characters"}, status=400)
         if role not in ("customer", "vendor", "admin"):
             return Response({"success": False, "message": "role must be customer, vendor, or admin"}, status=400)
 
@@ -78,7 +118,7 @@ class RegisterView(APIView):
                     "updated_at":        datetime.utcnow(),
                 })
 
-        return Response({
+        response = Response({
             "success": True,
             "message": "account created successfully",
             "data": {
@@ -86,14 +126,18 @@ class RegisterView(APIView):
                 "tokens": tokens,
             }
         }, status=201)
+        _set_auth_cookies(response, tokens)
+        return response
 
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes   = [LoginRateThrottle]
 
     def post(self, request):
-        email    = request.data.get("email",    "").strip().lower()
-        password = request.data.get("password", "")
+        data     = clean(request.data)
+        email    = data.get("email",    "").strip().lower()
+        password = data.get("password", "")
 
         if not email or not password:
             return Response({"success": False, "message": "email and password are required"}, status=400)
@@ -109,7 +153,7 @@ class LoginView(APIView):
         user_id = str(user["_id"])
         tokens  = generate_tokens(user_id)
 
-        return Response({
+        response = Response({
             "success": True,
             "message": "login successful",
             "data": {
@@ -122,20 +166,42 @@ class LoginView(APIView):
                 "tokens": tokens,
             }
         })
+        _set_auth_cookies(response, tokens)
+        return response
 
 
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes   = [RefreshRateThrottle]
 
     def post(self, request):
-        refresh_token = request.data.get("refresh")
+        # Accept refresh token from HttpOnly cookie first, body as fallback
+        refresh_token = request.COOKIES.get("refresh_token") or request.data.get("refresh")
         if not refresh_token:
             return Response({"success": False, "message": "refresh token is required"}, status=400)
         try:
-            token = RefreshToken(refresh_token)
-            return Response({"success": True, "data": {"access": str(token.access_token)}})
+            token      = RefreshToken(refresh_token)
+            new_access = str(token.access_token)
+            response   = Response({"success": True, "data": {"access": new_access}})
+            # Rotate the access cookie using the same SameSite strategy as login
+            is_prod  = not settings.DEBUG
+            samesite = "None" if is_prod else "Lax"
+            response.set_cookie(
+                "access_token", new_access, max_age=60 * 15,
+                httponly=True, secure=is_prod, samesite=samesite, path="/",
+            )
+            return response
         except TokenError:
             return Response({"success": False, "message": "invalid or expired refresh token"}, status=401)
+
+
+class LogoutView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        response = Response({"success": True, "message": "logged out successfully"})
+        _clear_auth_cookies(response)
+        return response
 
 
 class ProfileView(APIView):
@@ -152,11 +218,12 @@ class ProfileView(APIView):
 
     def patch(self, request):
         user_id        = request.user.pk
+        data           = clean(request.data)
         allowed_fields = {"name", "phone", "address", "city", "pincode", "state"}
-        updates        = {k: v for k, v in request.data.items() if k in allowed_fields}
+        updates        = {k: v for k, v in data.items() if k in allowed_fields}
 
         # handle email update separately (check uniqueness)
-        new_email = request.data.get("email", "").strip().lower()
+        new_email = data.get("email", "").strip().lower()
         if new_email:
             existing = users_col().find_one({"email": new_email})
             if existing and str(existing["_id"]) != user_id:
@@ -186,14 +253,15 @@ class ChangePasswordView(APIView):
 
     def post(self, request):
         user_id      = request.user.pk
-        old_password = request.data.get("old_password", "")
-        new_password = request.data.get("new_password", "")
+        data         = clean(request.data)
+        old_password = data.get("old_password", "")
+        new_password = data.get("new_password", "")
 
         if not old_password or not new_password:
             return Response({"success": False, "message": "old and new password are required"}, status=400)
 
-        if len(new_password) < 6:
-            return Response({"success": False, "message": "new password must be at least 6 characters"}, status=400)
+        if len(new_password) < 8:
+            return Response({"success": False, "message": "new password must be at least 8 characters"}, status=400)
 
         user = users_col().find_one({"_id": to_object_id(user_id)})
         if not user:

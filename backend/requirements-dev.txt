@@ -1,0 +1,4 @@
+# Dev / CI tools — not installed in production
+flake8==7.1.1
+flake8-bugbear==24.10.31
+bandit[toml]==1.8.3

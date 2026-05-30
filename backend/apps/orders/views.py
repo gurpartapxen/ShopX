@@ -1,15 +1,23 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.throttling import UserRateThrottle
 from datetime import datetime
 import razorpay
 import os
 import hmac
 import hashlib
 
-from utils.db import orders_col, products_col, inventory_col, users_col, vendors_col, get_db
+
+class CheckoutRateThrottle(UserRateThrottle):
+    scope = "checkout"
+
+class PaymentRateThrottle(UserRateThrottle):
+    scope = "payment"
+
+from utils.db import orders_col, products_col, inventory_col, vendors_col, get_db
 from utils.helpers import to_str_id, to_object_id
 from utils.permissions import require_role
+from utils.sanitize import clean
 
 
 def get_razorpay_client():
@@ -23,8 +31,9 @@ def coupons_col():
 class CouponValidateView(APIView):
     @require_role("customer", "vendor", "admin")
     def post(self, request):
-        code  = request.data.get("code", "").strip().upper()
-        total = float(request.data.get("total", 0))
+        data  = clean(request.data)
+        code  = data.get("code", "").strip().upper()
+        total = float(data.get("total", 0))
 
         if not code:
             return Response({"success": False, "message": "coupon code is required"}, status=400)
@@ -76,12 +85,15 @@ class CouponValidateView(APIView):
 
 
 class CheckoutView(APIView):
+    throttle_classes = [CheckoutRateThrottle]
+
     @require_role("customer", "vendor", "admin")
     def post(self, request):
         user_id     = request.user.pk
-        items       = request.data.get("items", [])
-        shipping    = request.data.get("shipping_address", {})
-        coupon_code = request.data.get("coupon_code", "").strip().upper()
+        data        = clean(request.data)
+        items       = data.get("items", [])
+        shipping    = data.get("shipping_address", {})
+        coupon_code = data.get("coupon_code", "").strip().upper()
 
         if not items:
             return Response({"success": False, "message": "cart is empty"}, status=400)
@@ -196,12 +208,15 @@ class CheckoutView(APIView):
 
 
 class PaymentVerifyView(APIView):
+    throttle_classes = [PaymentRateThrottle]
+
     @require_role("customer", "vendor", "admin")
     def post(self, request):
-        order_id      = request.data.get("order_id")
-        rz_order_id   = request.data.get("razorpay_order_id")
-        rz_payment_id = request.data.get("razorpay_payment_id")
-        rz_signature  = request.data.get("razorpay_signature")
+        data          = clean(request.data)
+        order_id      = data.get("order_id")
+        rz_order_id   = data.get("razorpay_order_id")
+        rz_payment_id = data.get("razorpay_payment_id")
+        rz_signature  = data.get("razorpay_signature")
 
         if not all([order_id, rz_order_id, rz_payment_id, rz_signature]):
             return Response({"success": False, "message": "all payment fields are required"}, status=400)
@@ -220,11 +235,28 @@ class PaymentVerifyView(APIView):
         if order["payment_status"] == "paid":
             return Response({"success": False, "message": "order already paid"}, status=400)
 
+        # Atomically decrement each item's inventory only if sufficient stock remains.
+        # findOneAndUpdate with $gte ensures we never go negative (oversell guard).
+        now = datetime.utcnow()
         for item in order["items"]:
-            inventory_col().update_one(
-                {"product_id": item["product_id"]},
-                {"$inc": {"quantity": -item["quantity"]}, "$set": {"updated_at": datetime.utcnow()}}
+            result = inventory_col().find_one_and_update(
+                {
+                    "product_id": item["product_id"],
+                    "quantity":   {"$gte": item["quantity"]},
+                },
+                {
+                    "$inc": {"quantity": -item["quantity"]},
+                    "$set": {"updated_at": now},
+                },
             )
+            if result is None:
+                # Stock was exhausted between checkout and payment (race condition).
+                # Payment is already captured — flag the order for manual review
+                # rather than silently ignoring, so support can issue a refund.
+                orders_col().update_one(
+                    {"_id": to_object_id(order_id)},
+                    {"$set": {"stock_issue": True, "updated_at": now}},
+                )
 
         orders_col().update_one(
             {"_id": to_object_id(order_id)},
@@ -232,8 +264,8 @@ class PaymentVerifyView(APIView):
                 "payment_status":      "paid",
                 "status":              "processing",
                 "razorpay_payment_id": rz_payment_id,
-                "paid_at":             datetime.utcnow(),
-                "updated_at":          datetime.utcnow(),
+                "paid_at":             now,
+                "updated_at":          now,
             }}
         )
 
@@ -328,7 +360,7 @@ class VendorOrderUpdateView(APIView):
         if order["vendor_id"] != str(vendor["_id"]):
             return Response({"success": False, "message": "this order does not belong to your store"}, status=403)
 
-        new_status     = request.data.get("status")
+        new_status     = clean(request.data).get("status")
         valid_statuses = ["processing", "shipped", "delivered", "cancelled"]
 
         if new_status not in valid_statuses:
@@ -351,25 +383,26 @@ class AdminCouponView(APIView):
 
     @require_role("admin")
     def post(self, request):
-        code = request.data.get("code", "").strip().upper()
+        data = clean(request.data)
+        code = data.get("code", "").strip().upper()
         if not code:
             return Response({"success": False, "message": "code is required"}, status=400)
 
         if coupons_col().find_one({"code": code}):
             return Response({"success": False, "message": "coupon code already exists"}, status=400)
 
-        discount_type  = request.data.get("discount_type", "percentage")
-        discount_value = float(request.data.get("discount_value", 0))
-        expires_at_str = request.data.get("expires_at")
+        discount_type  = data.get("discount_type", "percentage")
+        discount_value = float(data.get("discount_value", 0))
+        expires_at_str = data.get("expires_at")
 
         coupon_doc = {
             "code":               code,
-            "description":        request.data.get("description", ""),
+            "description":        data.get("description", ""),
             "discount_type":      discount_type,
             "discount_value":     discount_value,
-            "max_discount_amount":request.data.get("max_discount_amount"),
-            "min_order_amount":   float(request.data.get("min_order_amount", 0)),
-            "max_uses":           request.data.get("max_uses"),
+            "max_discount_amount":data.get("max_discount_amount"),
+            "min_order_amount":   float(data.get("min_order_amount", 0)),
+            "max_uses":           data.get("max_uses"),
             "used_count":         0,
             "used_by":            [],
             "is_active":          True,
@@ -394,7 +427,7 @@ class AdminCouponDetailView(APIView):
 
         allowed = {"description", "discount_type", "discount_value", "max_discount_amount",
                    "min_order_amount", "max_uses", "is_active"}
-        updates = {k: v for k, v in request.data.items() if k in allowed}
+        updates = {k: v for k, v in clean(request.data).items() if k in allowed}
         if updates:
             coupons_col().update_one({"code": code}, {"$set": updates})
 
@@ -429,12 +462,13 @@ class OrderCancelView(APIView):
                     {"$inc": {"quantity": item["quantity"]}, "$set": {"updated_at": datetime.utcnow()}}
                 )
 
+        cancel_reason = clean(request.data).get("reason", "Cancelled by customer")
         orders_col().update_one(
             {"_id": to_object_id(order_id)},
             {"$set": {
                 "status":        "cancelled",
                 "cancelled_at":  datetime.utcnow(),
-                "cancel_reason": request.data.get("reason", "Cancelled by customer"),
+                "cancel_reason": cancel_reason,
                 "updated_at":    datetime.utcnow(),
             }}
         )
@@ -481,7 +515,7 @@ class ReturnRequestView(APIView):
         if order.get("return_requested"):
             return Response({"success": False, "message": "return already requested for this order"}, status=400)
 
-        reason = request.data.get("reason", "").strip()
+        reason = clean(request.data).get("reason", "").strip()
         if not reason:
             return Response({"success": False, "message": "return reason is required"}, status=400)
 

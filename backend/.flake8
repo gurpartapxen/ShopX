@@ -1,0 +1,21 @@
+[flake8]
+# Match the codebase's style — keep lines readable without being overly strict
+max-line-length = 120
+
+# Directories to skip entirely
+exclude =
+    venv,
+    .venv,
+    __pycache__,
+    .git,
+    setup_db.py
+
+# Codes to ignore globally
+# W503 — line break before binary operator (conflicts with Black/PEP 8 update)
+# E501 handled by max-line-length above
+ignore = W503
+
+# Per-file exceptions
+per-file-ignores =
+    # Settings files commonly have longer lines and conditional imports
+    config/settings.py: E501

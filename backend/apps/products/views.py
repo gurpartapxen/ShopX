@@ -5,10 +5,19 @@ from datetime import datetime
 import cloudinary
 import cloudinary.uploader
 import os
+import re
+
+from django.core.cache import cache
 
 from utils.db import products_col, vendors_col, inventory_col, get_db
 from utils.helpers import to_str_id, to_object_id
 from utils.permissions import require_role
+from utils.sanitize import clean
+from utils.cache import (
+    product_list_key, product_detail_key,
+    bust_product, bust_product_detail, bust_product_lists,
+    PRODUCT_LIST_TTL, PRODUCT_DETAIL_TTL,
+)
 
 
 def reviews_col():
@@ -28,6 +37,12 @@ class ProductListCreateView(APIView):
         return [AllowAny()]
 
     def get(self, request):
+        # Serve from cache if available (keyed by the full query-param set)
+        ck = product_list_key(dict(request.query_params))
+        cached = cache.get(ck)
+        if cached is not None:
+            return Response(cached)
+
         query = {"is_active": True}
 
         vendor_id = request.query_params.get("vendor_id")
@@ -40,9 +55,11 @@ class ProductListCreateView(APIView):
 
         search = request.query_params.get("q")
         if search:
+            # re.escape prevents ReDoS from malicious regex patterns in user input
+            safe_search = re.escape(search[:200])
             query["$or"] = [
-                {"name":        {"$regex": search, "$options": "i"}},
-                {"description": {"$regex": search, "$options": "i"}},
+                {"name":        {"$regex": safe_search, "$options": "i"}},
+                {"description": {"$regex": safe_search, "$options": "i"}},
             ]
 
         min_price = request.query_params.get("min_price")
@@ -107,7 +124,7 @@ class ProductListCreateView(APIView):
 
         total = products_col().count_documents(query)
 
-        return Response({
+        result = {
             "success": True,
             "data": {
                 "products": products,
@@ -115,7 +132,9 @@ class ProductListCreateView(APIView):
                 "page":     page,
                 "pages":    max((total + limit - 1) // limit, 1),
             }
-        })
+        }
+        cache.set(ck, result, PRODUCT_LIST_TTL)
+        return Response(result)
 
     @require_role("vendor")
     def post(self, request):
@@ -128,9 +147,10 @@ class ProductListCreateView(APIView):
                 "message": "your vendor account must be approved before adding products"
             }, status=403)
 
-        name     = request.data.get("name",     "").strip()
-        price    = request.data.get("price")
-        category = request.data.get("category", "").strip()
+        data     = clean(request.data)
+        name     = data.get("name",     "").strip()
+        price    = data.get("price")
+        category = data.get("category", "").strip()
 
         if not name:
             return Response({"success": False, "message": "name is required"}, status=400)
@@ -145,7 +165,7 @@ class ProductListCreateView(APIView):
             return Response({"success": False, "message": "price must be a positive number"}, status=400)
 
         try:
-            discount = max(0, min(90, int(request.data.get("discount", 0) or 0)))
+            discount = max(0, min(90, int(data.get("discount", 0) or 0)))
         except (TypeError, ValueError):
             discount = 0
 
@@ -154,12 +174,12 @@ class ProductListCreateView(APIView):
         product_doc = {
             "vendor_id":   vendor_id,
             "name":        name,
-            "description": request.data.get("description", "").strip(),
+            "description": data.get("description", "").strip(),
             "price":       price,
             "discount":    discount,
             "category":    category,
-            "images":      request.data.get("images", []),
-            "tags":        request.data.get("tags",   []),
+            "images":      data.get("images", []),
+            "tags":        data.get("tags",   []),
             "is_active":   True,
             "created_at":  datetime.utcnow(),
             "updated_at":  datetime.utcnow(),
@@ -171,13 +191,14 @@ class ProductListCreateView(APIView):
         inventory_col().insert_one({
             "product_id": product_id,
             "vendor_id":  vendor_id,
-            "quantity":   int(request.data.get("quantity", 0)),
+            "quantity":   int(data.get("quantity", 0)),
             "updated_at": datetime.utcnow(),
         })
 
         product_doc["id"] = product_id
         product_doc.pop("_id", None)
 
+        bust_product_lists()   # new product → stale list caches
         return Response({
             "success": True,
             "message": "product created successfully",
@@ -190,6 +211,11 @@ class ProductDetailView(APIView):
         return [AllowAny()]
 
     def get(self, request, product_id):
+        ck = product_detail_key(product_id)
+        cached = cache.get(ck)
+        if cached is not None:
+            return Response(cached)
+
         product = products_col().find_one({
             "_id":       to_object_id(product_id),
             "is_active": True,
@@ -218,7 +244,9 @@ class ProductDetailView(APIView):
             })
         product["rating_breakdown"] = breakdown
 
-        return Response({"success": True, "data": to_str_id(product)})
+        result = {"success": True, "data": to_str_id(product)}
+        cache.set(ck, result, PRODUCT_DETAIL_TTL)
+        return Response(result)
 
     @require_role("vendor")
     def patch(self, request, product_id):
@@ -231,7 +259,7 @@ class ProductDetailView(APIView):
             return Response({"success": False, "message": "you can only edit your own products"}, status=403)
 
         allowed = {"name", "description", "price", "discount", "category", "images", "tags"}
-        updates = {k: v for k, v in request.data.items() if k in allowed}
+        updates = {k: v for k, v in clean(request.data).items() if k in allowed}
 
         if not updates:
             return Response({"success": False, "message": "no valid fields to update"}, status=400)
@@ -239,6 +267,7 @@ class ProductDetailView(APIView):
         updates["updated_at"] = datetime.utcnow()
         products_col().update_one({"_id": to_object_id(product_id)}, {"$set": updates})
 
+        bust_product(product_id)   # detail + all list caches
         return Response({"success": True, "message": "product updated successfully"})
 
     @require_role("vendor")
@@ -255,6 +284,7 @@ class ProductDetailView(APIView):
             {"_id": to_object_id(product_id)},
             {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
         )
+        bust_product(product_id)   # detail + all list caches
         return Response({"success": True, "message": "product removed successfully"})
 
 
@@ -283,7 +313,7 @@ class InventoryView(APIView):
             return Response({"success": False, "message": "you can only update inventory for your own products"}, status=403)
 
         try:
-            quantity = int(request.data.get("quantity"))
+            quantity = int(clean(request.data).get("quantity"))
             if quantity < 0:
                 raise ValueError
         except (TypeError, ValueError):
@@ -295,6 +325,7 @@ class InventoryView(APIView):
             upsert=True,
         )
 
+        bust_product_detail(product_id)   # stock changed in detail view
         return Response({
             "success": True,
             "message": "inventory updated successfully",
@@ -386,14 +417,15 @@ class ProductReviewsView(APIView):
                 "message": "you have already reviewed this product"
             }, status=400)
 
+        data = clean(request.data)
         try:
-            rating = int(request.data.get("rating"))
+            rating = int(data.get("rating"))
             if not 1 <= rating <= 5:
                 raise ValueError
         except (TypeError, ValueError):
             return Response({"success": False, "message": "rating must be between 1 and 5"}, status=400)
 
-        comment = request.data.get("comment", "").strip()
+        comment = data.get("comment", "").strip()
         if len(comment) > 1000:
             return Response({"success": False, "message": "comment too long (max 1000 chars)"}, status=400)
 
@@ -410,6 +442,7 @@ class ProductReviewsView(APIView):
         review_doc["id"] = str(result.inserted_id)
         review_doc.pop("_id", None)
 
+        bust_product_detail(product_id)   # avg_rating / review_count changed
         return Response({
             "success": True,
             "message": "review submitted successfully",

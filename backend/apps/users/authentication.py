@@ -24,13 +24,15 @@ class MongoUser:
 class MongoJWTAuthentication(BaseAuthentication):
 
     def authenticate(self, request):
-        auth_header = request.META.get("HTTP_AUTHORIZATION", "")
-        parts = auth_header.split()
+        # Prefer HttpOnly cookie (XSS-safe); fall back to Authorization header
+        raw_token = request.COOKIES.get("access_token")
 
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            return None
-
-        raw_token = parts[1]
+        if not raw_token:
+            auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+            parts = auth_header.split()
+            if len(parts) != 2 or parts[0].lower() != "bearer":
+                return None
+            raw_token = parts[1]
 
         try:
             validated_token = AccessToken(raw_token)

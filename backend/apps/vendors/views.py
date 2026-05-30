@@ -4,10 +4,13 @@ from rest_framework.permissions import AllowAny
 from datetime import datetime
 import re
 
-from utils.db import vendors_col, users_col
+from django.core.cache import cache
+
+from utils.db import vendors_col
 from utils.helpers import to_str_id, to_object_id
 from utils.permissions import require_role
-from apps.users.authentication import MongoJWTAuthentication
+from utils.sanitize import clean
+from utils.cache import vendor_public_key, bust_vendor, VENDOR_TTL
 
 
 def slugify(name: str) -> str:
@@ -21,9 +24,10 @@ class VendorOnboardView(APIView):
     @require_role("vendor")
     def post(self, request):
         user_id     = request.user.pk
-        store_name  = request.data.get("store_name",  "").strip()
-        description = request.data.get("description", "").strip()
-        phone       = request.data.get("phone",       "").strip()
+        data        = clean(request.data)
+        store_name  = data.get("store_name",  "").strip()
+        description = data.get("description", "").strip()
+        phone       = data.get("phone",       "").strip()
 
         if not store_name:
             return Response({"success": False, "message": "store_name is required"}, status=400)
@@ -76,13 +80,15 @@ class VendorProfileView(APIView):
             return Response({"success": False, "message": "vendor profile not found"}, status=404)
 
         allowed = {"store_name", "description", "phone", "logo_url"}
-        updates = {k: v for k, v in request.data.items() if k in allowed}
+        updates = {k: v for k, v in clean(request.data).items() if k in allowed}
 
         if not updates:
             return Response({"success": False, "message": "no valid fields to update"}, status=400)
 
         updates["updated_at"] = datetime.utcnow()
         vendors_col().update_one({"user_id": user_id}, {"$set": updates})
+
+        bust_vendor(str(vendor["_id"]))   # public profile changed
         return Response({"success": True, "message": "store profile updated"})
 
 
@@ -90,6 +96,11 @@ class PublicVendorView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, vendor_id):
+        ck = vendor_public_key(vendor_id)
+        cached = cache.get(ck)
+        if cached is not None:
+            return Response(cached)
+
         vendor = vendors_col().find_one({
             "_id":         to_object_id(vendor_id),
             "is_active":   True,
@@ -99,7 +110,9 @@ class PublicVendorView(APIView):
             return Response({"success": False, "message": "vendor not found"}, status=404)
 
         vendor.pop("user_id", None)
-        return Response({"success": True, "data": to_str_id(vendor)})
+        result = {"success": True, "data": to_str_id(vendor)}
+        cache.set(ck, result, VENDOR_TTL)
+        return Response(result)
 
 
 class AdminVendorListView(APIView):
