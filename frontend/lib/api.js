@@ -1,6 +1,10 @@
 import axios from "axios";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL;
+// Same-origin BFF prefix — next.config.mjs reverse-proxies /bff/* to the real
+// backend. Talking to our own origin keeps the auth cookies first-party, so the
+// HttpOnly refresh cookie and readable CSRF cookie behave correctly on reload
+// even though the backend is on a different domain in production.
+const BASE = "/bff";
 
 // ── In-memory access-token store ──────────────────────────────────────────────
 // The access token lives ONLY in JS memory — never localStorage/sessionStorage.

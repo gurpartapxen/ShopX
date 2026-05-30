@@ -332,6 +332,40 @@ Free options: Render managed Redis, or [Upstash](https://upstash.com) free tier.
 
 ---
 
+## 13. Cross-Domain Cookie Fix — Same-Origin Proxy (BFF)
+
+**Problem:** After the HttpOnly-cookie auth went live, production (but not local dev) logged the
+user out on every page reload. Root cause: the frontend (Vercel) and backend (Render) are on
+**different domains**. The readable `csrf_token` cookie is set by the *Render* domain, but a page
+served from the *Vercel* domain cannot read another domain's cookie via `document.cookie`. So the
+reload-time session probe `hasSession()` was always false → the app never attempted the refresh →
+redirect to login. (It worked locally only because `localhost:3000` and `localhost:8000` share the
+`localhost` hostname.) Worse, even a forced refresh couldn't build the `X-CSRF-Token` header, and a
+third-party cookie may not be sent at all under modern browser policies.
+
+**Fix — reverse-proxy the API through the frontend's own origin:**
+
+- `next.config.mjs` rewrites `/bff/:path*` → `${BACKEND_ORIGIN}/api/:path*/`. The browser now only
+  ever talks to the Vercel origin; Next.js proxies to Render server-side. The backend's auth cookies
+  are therefore **first-party** to the Vercel domain — readable and sent on reload, exactly like dev.
+- `BACKEND_ORIGIN` is derived from the existing `NEXT_PUBLIC_API_URL` (strip the trailing `/api`),
+  so **no new environment variable** is needed.
+- `skipTrailingSlashRedirect: true` + an explicit trailing slash in the destination — Next's
+  `:path*` capture drops the incoming slash and Django requires it (`APPEND_SLASH`).
+- `lib/api.js` — axios `baseURL` changed from the absolute backend URL to the same-origin `/bff`.
+- Because requests are now same-origin, CORS is bypassed entirely (no preflight), and `SameSite`
+  cookies behave first-party. The existing HttpOnly + CSRF design is unchanged — it just works now.
+
+**Verified locally:** register through `/bff` scopes both cookies to the *frontend* origin
+(`localhost:3000`); a cookies-only refresh (reload simulation) returns `200` + access + user.
+
+**Deploy:** redeploy the **frontend** only (Next.js config + api client). Backend unchanged.
+No Vercel/Render env-var changes required.
+
+**Files changed:** `frontend/next.config.mjs` · `frontend/lib/api.js`
+
+---
+
 ## Still To Do
 
 - [ ] Razorpay webhooks — confirm payment server-side if browser closes before callback
