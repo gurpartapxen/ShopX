@@ -12,7 +12,11 @@
       "PowerShell(gh run list --repo gurpartapxen/ShopX --limit 3 --json databaseId,status,conclusion,name,workflowName 2>&1)",
       "WebFetch(domain:api.github.com)",
       "PowerShell(Set-Location \"C:\\\\Users\\\\SIMMA\\\\PycharmProjects\\\\pythonEcommerce\\\\frontend\"; npx eslint . 2>&1 | Where-Object { $_ -match \"error\" } | Select-Object -First 30)",
-      "PowerShell(Set-Location \"C:\\\\Users\\\\SIMMA\\\\PycharmProjects\\\\pythonEcommerce\\\\frontend\"; npx eslint . 2>&1 | Where-Object { $_ -match \"^\\\\s+\\\\d+:\\\\d+\\\\s+error\" -or \\($_ -match \"\\\\.js$\" -and $_ -notmatch \"node_modules\"\\) } | Select-Object -First 30)"
+      "PowerShell(Set-Location \"C:\\\\Users\\\\SIMMA\\\\PycharmProjects\\\\pythonEcommerce\\\\frontend\"; npx eslint . 2>&1 | Where-Object { $_ -match \"^\\\\s+\\\\d+:\\\\d+\\\\s+error\" -or \\($_ -match \"\\\\.js$\" -and $_ -notmatch \"node_modules\"\\) } | Select-Object -First 30)",
+      "PowerShell(Get-Process -Name \"python\",\"node\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "Bash(git commit -m ' *)",
+      "Bash(git pull *)"
     ],
     "additionalDirectories": [
       "c:\\Users\\SIMMA\\.claude\\projects\\c--Users-SIMMA-PycharmProjects-pythonEcommerce\\memory"

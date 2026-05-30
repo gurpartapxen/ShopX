@@ -7,20 +7,13 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
     const [user, setUser] = useState(null);
-    // Start in "loading" only when a session cookie is present (so we have
-    // something to validate). Computed at first render to avoid a setState in
-    // the effect body. Nothing sensitive is read — just the csrf_token probe.
     const [loading, setLoading] = useState(() => hasSession());
 
-    // On mount, re-mint the access token from the HttpOnly refresh cookie and
-    // pull the authoritative user from the server. We never trust client storage
-    // for auth state — the /refresh/ response is the single source of truth.
     useEffect(() => {
         if (!hasSession()) return;   // no cookie → not logged in, loading already false
 
         authAPI.refresh()
             .then((res) => {
-                // refreshAccessToken() already stored the access token in memory
                 setUser(res.data.data.user);
             })
             .catch(() => {
