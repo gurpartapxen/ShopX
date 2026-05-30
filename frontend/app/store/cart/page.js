@@ -5,14 +5,14 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
 export default function CartPage() {
-    const [cart,    setCart]    = useState([]);
+    const [cart,    setCart]    = useState(() =>
+        typeof window !== "undefined"
+            ? JSON.parse(localStorage.getItem("cart") || "[]")
+            : []
+    );
     const [loading, setLoading] = useState(false);
     const router = useRouter();
     const { user, loading: authLoading } = useAuth();
-
-    useEffect(() => {
-        setCart(JSON.parse(localStorage.getItem("cart") || "[]"));
-    }, []);
 
     useEffect(() => {
         if (!authLoading && !user) router.push("/login");
