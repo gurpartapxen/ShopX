@@ -73,6 +73,8 @@ This is what separates the hardened build from the original MVP:
 - **Rate limiting** — Throttling on login (5/min), register (3/min), refresh, checkout, and payment.
 - **Security headers** — CSP, HSTS, Referrer-Policy, Permissions-Policy, X-Frame-Options, nosniff.
 - **NoSQL-injection & ReDoS hardening** — All write inputs sanitized; product search escaped.
+- **Two-layer validation** — DRF serializers validate every write request; MongoDB `$jsonSchema`
+  validators enforce types/enums/required fields at the database. Registration can't self-assign `admin`.
 - **Atomic inventory** — Stock decrements use `find_one_and_update` with a `$gte` guard (no overselling).
 - **MongoDB indexes** — On all collections (unique email, product text search, one-review-per-user, etc.).
 - **Performance** — Redis caching for product listings, detail pages, and vendor profiles.
@@ -81,40 +83,105 @@ This is what separates the hardened build from the original MVP:
 
 ---
 
-## Project Structure
+## Codebase Guide
 
-```
-ShopX/
-├── .github/workflows/ci.yml     # CI/CD: lint, security scan, build, deploy
-├── IMPROVEMENTS.md              # full engineering / hardening log
-├── backend/
-│   ├── apps/
-│   │   ├── users/               # auth — register, login, refresh, logout, profile
-│   │   ├── vendors/             # vendor onboarding, admin approve/suspend
-│   │   ├── products/            # product CRUD, inventory, reviews
-│   │   └── orders/              # checkout, payments, cancel, return, coupons
-│   ├── config/
-│   │   ├── settings.py          # DRF, JWT, CORS, cache, security headers
-│   │   └── middleware.py        # CSP / Referrer-Policy / Permissions-Policy
-│   ├── utils/
-│   │   ├── db.py                # MongoDB connection + index creation
-│   │   ├── csrf.py              # double-submit CSRF helpers
-│   │   ├── sanitize.py          # NoSQL-injection input sanitizer
-│   │   ├── cache.py             # cache keys + invalidation
-│   │   ├── helpers.py           # ObjectId converters
-│   │   └── permissions.py       # role-based access decorator
-│   └── setup_db.py              # run once to create MongoDB indexes
-│
-└── frontend/
-    ├── next.config.mjs          # same-origin /bff reverse proxy to the backend
-    ├── app/
-    │   ├── store/               # storefront, product detail, cart, checkout, orders
-    │   │   └── product/[id]/     # Server Component (SEO/ISR) + Client Component (UI)
-    │   ├── vendor/              # vendor dashboard
-    │   └── admin/               # admin dashboard
-    ├── context/AuthContext.js   # global auth state (cookie-based session)
-    └── lib/api.js               # axios client (Bearer + CSRF header, silent refresh)
-```
+A brief tour of every meaningful file and what it does.
+
+### Backend (`backend/`)
+
+**Project config (`config/`)**
+| File | What it does |
+|------|--------------|
+| `config/settings.py` | Central Django config — installed apps, DRF, custom JWT auth, throttle rates, CORS, Redis/in-memory cache, and security-header settings (HSTS, nosniff, X-Frame). |
+| `config/urls.py` | Root URL router — mounts `/api/health/` and includes each app's URLs under `/api/auth`, `/api/vendors`, `/api/products`, `/api/orders`. |
+| `config/middleware.py` | `SecurityHeadersMiddleware` — adds Content-Security-Policy, Referrer-Policy, and Permissions-Policy to every response. |
+| `config/wsgi.py` | WSGI entry point used by Gunicorn in production. |
+
+**Apps (`apps/`)** — each has `views.py` (logic), `urls.py` (routes), `serializers.py` (request validation)
+| File | What it does |
+|------|--------------|
+| `apps/users/views.py` | Register, login, refresh, logout, profile, change-password. Sets the HttpOnly refresh + CSRF cookies; returns the access token in the body. |
+| `apps/users/authentication.py` | `MongoJWTAuthentication` — validates the `Bearer` access token and loads the Mongo user as `MongoUser`. Header-only (no cookie) so data endpoints stay CSRF-proof. |
+| `apps/users/serializers.py` | Validates auth payloads; restricts registration to `customer`/`vendor` (blocks self-made admins). |
+| `apps/vendors/views.py` | Vendor onboarding, own-profile get/update, public vendor view, and admin approve/suspend. |
+| `apps/vendors/serializers.py` | Validates vendor onboarding + profile updates. |
+| `apps/products/views.py` | Product list (filters/search/sort + cache), detail, create/update/delete, inventory, reviews, Cloudinary image upload. |
+| `apps/products/serializers.py` | Validates product create/update, inventory quantity, and review rating/comment. |
+| `apps/orders/views.py` | Checkout (Razorpay order), payment verify (HMAC + atomic stock), order list/detail, cancel, returns, vendor order status, admin coupons. |
+| `apps/orders/serializers.py` | Validates checkout items, coupon validation, and coupon create/update. |
+
+**Shared utilities (`utils/`)**
+| File | What it does |
+|------|--------------|
+| `utils/db.py` | The single MongoDB connection (singleton PyMongo client), collection accessors, **index creation**, and **`$jsonSchema` validators** for all collections. |
+| `utils/permissions.py` | `@require_role(...)` decorator — authenticates the request and enforces role-based access on a view. |
+| `utils/csrf.py` | Double-submit CSRF token generator + constant-time validator for the cookie-authenticated refresh endpoint. |
+| `utils/sanitize.py` | `clean()` — strips `$`-prefixed keys and null bytes from input to prevent NoSQL injection. |
+| `utils/cache.py` | Cache key builders, TTLs, and invalidation helpers for product/vendor caching. |
+| `utils/helpers.py` | `to_str_id` / `to_object_id` ObjectId converters + `first_error()` (DRF errors → `{message}`). |
+
+**Scripts & config**
+| File | What it does |
+|------|--------------|
+| `setup_db.py` | Run once after setup — tests the DB connection, creates all indexes, and applies the JSON Schema validators. |
+| `gen_sig.py` | Dev helper to generate a Razorpay HMAC signature for manually testing payment verification. |
+| `requirements_clean.txt` | Runtime dependencies (Django, DRF, PyMongo, Razorpay, Cloudinary, Redis…). |
+| `requirements-dev.txt` | CI-only tools — flake8 + bandit. |
+| `.flake8` | Lint config (max line length, ignores, excludes). |
+| `.env.example` | Template for the required environment variables. |
+
+### Frontend (`frontend/`)
+
+**Config**
+| File | What it does |
+|------|--------------|
+| `next.config.mjs` | The `/bff/*` same-origin reverse proxy to the backend (makes auth cookies first-party) + trailing-slash handling. |
+| `eslint.config.mjs` | ESLint (Next core-web-vitals) config used in CI. |
+| `jsconfig.json` | Path alias `@/*` → project root. |
+| `postcss.config.mjs` | Tailwind CSS v4 PostCSS plugin. |
+
+**App shell & data layer**
+| File | What it does |
+|------|--------------|
+| `app/layout.js` | Root layout — fonts, global metadata (title template, Open Graph), wraps everything in `AuthProvider`. |
+| `app/globals.css` | Global styles / Tailwind import. |
+| `app/page.js` | Landing route — redirects by role (customer → store, vendor → dashboard, admin → admin). |
+| `context/AuthContext.js` | Global auth state — login/register/logout, silent refresh on reload, in-memory access token. |
+| `lib/api.js` | Axios client — attaches the Bearer + CSRF headers, dedup silent-refresh on 401; exports the typed `authAPI`/`productsAPI`/`ordersAPI`/`vendorsAPI`. |
+| `components/ImageUploader.js` | Reusable file-upload widget that posts to the Cloudinary upload endpoint. |
+| `app/api/logo/route.js` | Tiny Next route handler that proxies external SVG logos (CORS-friendly). |
+
+**Auth pages**
+| File | What it does |
+|------|--------------|
+| `app/login/page.js` | Login form. |
+| `app/register/page.js` | Registration with a 2-step vendor flow (store details). |
+
+**Storefront (`app/store/`)**
+| File | What it does |
+|------|--------------|
+| `store/layout.js` | Store-section metadata (title template). |
+| `store/page.js` | Main storefront — product grid, category/gender filters, search, sorting. |
+| `store/product/[id]/page.js` | **Server Component** — SEO metadata, JSON-LD, ISR caching. |
+| `store/product/[id]/ProductPageClient.js` | **Client Component** — gallery, add-to-cart/wishlist, reviews UI. |
+| `store/cart/page.js` | Cart (localStorage-backed). |
+| `store/checkout/page.js` | Address + Razorpay checkout flow. |
+| `store/wishlist/page.js` | Saved items. |
+| `store/orders/page.js` | Order history. |
+| `store/orders/[id]/page.js` | Order detail — status, cancel, return request. |
+| `store/profile/page.js` | Profile + address edit, change password. |
+| `store/new-arrivals/`, `store/deals/`, `store/sale/` | Curated product listing variants. |
+
+**Dashboards**
+| File | What it does |
+|------|--------------|
+| `app/vendor/page.js` | Vendor dashboard — manage products, inventory, and order status. |
+| `app/admin/page.js` | Admin dashboard — approve/suspend vendors, manage coupons. |
+
+### Root
+| File | What it does |
+|------|--------------|
+| `.github/workflows/ci.yml` | CI/CD — backend lint + security scan, frontend lint + build, deploy on green. |
 
 ---
 
@@ -127,7 +194,7 @@ python -m venv venv
 venv\Scripts\activate                 # Windows  (use: source venv/bin/activate on macOS/Linux)
 pip install -r requirements_clean.txt
 copy .env.example .env                 # then fill in your values
-python setup_db.py                     # one-time: creates MongoDB indexes
+python setup_db.py                     # one-time: creates indexes + JSON Schema validators
 python manage.py runserver
 ```
 
