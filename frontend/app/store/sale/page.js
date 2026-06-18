@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { productsAPI } from "@/lib/api";
+import { cloudinaryThumb } from "@/lib/img";
 
 export default function SalePage() {
     const [products,  setProducts]  = useState([]);
@@ -175,7 +176,7 @@ export default function SalePage() {
                             products.map((p) => (
                                 <div className="card" key={p.id} onClick={() => router.push(`/store/product/${p.id}`)}>
                                     <div className="card-img">
-                                        {p.images?.[0] ? <img src={p.images[0]} alt={p.name} /> : "📦"}
+                                        {p.images?.[0] ? <img src={cloudinaryThumb(p.images[0], 400)} alt={p.name} loading="lazy" decoding="async" /> : "📦"}
                                     </div>
                                     <div className="sale-badge">SALE</div>
                                     {p.discount > 0 && <div className="discount-badge">{p.discount}% off</div>}

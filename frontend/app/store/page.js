@@ -1,13 +1,19 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { productsAPI } from "@/lib/api";
+import { cloudinaryThumb } from "@/lib/img";
+
+const PAGE_SIZE = 20;
 
 export default function StorePage() {
-    const [products,       setProducts]       = useState([]);
-    const [loading,        setLoading]        = useState(true);
+    const [allProducts,    setAllProducts]    = useState([]);   // raw, server-paginated
+    const [page,           setPage]           = useState(1);
+    const [totalPages,     setTotalPages]     = useState(1);
+    const [loading,        setLoading]        = useState(true);  // first page
+    const [loadingMore,    setLoadingMore]    = useState(false); // subsequent pages
     const [search,         setSearch]         = useState("");
     const [category,       setCategory]       = useState("");
     const [gender,         setGender]         = useState("");
@@ -27,47 +33,13 @@ export default function StorePage() {
         if (!authLoading && !user) router.push("/login");
     }, [user, authLoading]);
 
-    useEffect(() => { fetchProducts(); }, [search, category, gender]);
+    // Refetch from page 1 whenever the category changes. Search and gender are
+    // applied client-side (below), so they don't trigger a network round trip.
+    useEffect(() => { fetchProducts(true); }, [category]);
 
-    useEffect(() => {
-        const wl   = JSON.parse(localStorage.getItem("wishlist") || "[]");
-        const cart = JSON.parse(localStorage.getItem("cart")     || "[]");
-        setWishlistCount(wl.length);
-        setCartCount(cart.reduce((sum, i) => sum + i.quantity, 0));
-    }, []);
-
-    useEffect(() => {
-        if (user && !authLoading) {
-            const shown = sessionStorage.getItem("login_toast_shown");
-            if (!shown) {
-                showToast(`Welcome back, ${user.name.split(" ")[0]}! 👋`, "success");
-                sessionStorage.setItem("login_toast_shown", "1");
-            }
-        }
-    }, [user, authLoading]);
-
-    const showToast = (message, type = "success") => {
-        const id = Date.now();
-        setToasts(prev => [...prev, { id, message, type }]);
-        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
-    };
-
-   const fetchProducts = async () => {
-    setLoading(true);
-    try {
-        const cacheKey = `products_${category}_${gender}_${search}`;
-        const cached = sessionStorage.getItem(cacheKey);
-
-        if (cached) {
-            setProducts(JSON.parse(cached));
-            setLoading(false);
-            return;
-        }
-
-        const params = {};
-        if (category) params.category = category;
-        const res = await productsAPI.list(params);
-        let prods = res.data.data.products;
+    // Derived view: filter the loaded pages by search text and gender.
+    const products = useMemo(() => {
+        let prods = allProducts;
 
         if (search) {
             const q = search.toLowerCase();
@@ -92,14 +64,53 @@ export default function StorePage() {
             });
         }
 
-        sessionStorage.setItem(cacheKey, JSON.stringify(prods));
-        setProducts(prods);
-    } catch (err) {
-        console.error(err);
-    } finally {
-        setLoading(false);
-    }
-};
+        return prods;
+    }, [allProducts, search, gender, category]);
+
+    useEffect(() => {
+        const wl   = JSON.parse(localStorage.getItem("wishlist") || "[]");
+        const cart = JSON.parse(localStorage.getItem("cart")     || "[]");
+        setWishlistCount(wl.length);
+        setCartCount(cart.reduce((sum, i) => sum + i.quantity, 0));
+    }, []);
+
+    useEffect(() => {
+        if (user && !authLoading) {
+            const shown = sessionStorage.getItem("login_toast_shown");
+            if (!shown) {
+                showToast(`Welcome back, ${user.name.split(" ")[0]}! 👋`, "success");
+                sessionStorage.setItem("login_toast_shown", "1");
+            }
+        }
+    }, [user, authLoading]);
+
+    const showToast = (message, type = "success") => {
+        const id = Date.now();
+        setToasts(prev => [...prev, { id, message, type }]);
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
+    };
+
+    // reset=true  → load page 1 and replace (category switch / first load)
+    // reset=false → load the next page and append ("Load more")
+    const fetchProducts = async (reset = false) => {
+        const nextPage = reset ? 1 : page + 1;
+        reset ? setLoading(true) : setLoadingMore(true);
+        try {
+            const params = { page: nextPage, limit: PAGE_SIZE };
+            if (category) params.category = category;
+
+            const res  = await productsAPI.list(params);
+            const data = res.data.data;
+
+            setAllProducts(prev => (reset ? data.products : [...prev, ...data.products]));
+            setPage(nextPage);
+            setTotalPages(data.pages || 1);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            reset ? setLoading(false) : setLoadingMore(false);
+        }
+    };
     const closeSidebar = () => {
         setClosingSidebar(true);
         setTimeout(() => {
@@ -411,6 +422,9 @@ export default function StorePage() {
                 .skel-card { background: #141414; border-radius: 18px; overflow: hidden; border: 1px solid rgba(255,255,255,0.07); }
                 .skel { background: linear-gradient(90deg, #1a1a1a 25%, #222 50%, #1a1a1a 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 6px; }
                 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+                .load-more { background: rgba(255,255,255,0.06); color: #f5f5f7; border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 13px 32px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+                .load-more:hover:not(:disabled) { background: rgba(255,255,255,0.1); }
+                .load-more:disabled { opacity: 0.5; cursor: not-allowed; }
                 .empty { grid-column: 1 / -1; text-align: center; padding: 80px 20px; background: #141414; border-radius: 18px; border: 1px solid rgba(255,255,255,0.06); }
                 .empty-icon { font-size: 40px; margin-bottom: 16px; }
                 .empty-h { font-size: 17px; font-weight: 600; color: #f5f5f7; margin-bottom: 6px; }
@@ -788,7 +802,9 @@ export default function StorePage() {
                             products.map((p) => (
                                 <div className="card" key={p.id} onClick={() => router.push(`/store/product/${p.id}`)}>
                                     <div className="card-img">
-                                        {p.images?.[0] ? <img src={p.images[0]} alt={p.name} /> : "📦"}
+                                        {p.images?.[0]
+                                            ? <img src={cloudinaryThumb(p.images[0], 400)} alt={p.name} loading="lazy" decoding="async" />
+                                            : "📦"}
                                         {p.stock < 10 && p.stock > 0 && <div className="card-badge">Low stock</div>}
                                     </div>
                                     {p.discount > 0 && <div className="discount-badge">{p.discount}% off</div>}
@@ -814,6 +830,14 @@ export default function StorePage() {
                             ))
                         )}
                     </div>
+
+                    {!loading && page < totalPages && (
+                        <div style={{ display: "flex", justifyContent: "center", marginTop: 32 }}>
+                            <button className="load-more" onClick={() => fetchProducts(false)} disabled={loadingMore}>
+                                {loadingMore ? "Loading…" : "Load more"}
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 <div className="trusted">

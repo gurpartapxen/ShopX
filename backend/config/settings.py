@@ -62,6 +62,8 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     # SecurityMiddleware handles HSTS, X-Content-Type-Options, etc.
     "django.middleware.security.SecurityMiddleware",
+    # GZip-compress responses (JSON payloads) before they go on the wire
+    "django.middleware.gzip.GZipMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",

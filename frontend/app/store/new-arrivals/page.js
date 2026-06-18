@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { productsAPI } from "@/lib/api";
+import { cloudinaryThumb } from "@/lib/img";
 
 function NewArrivalsContent() {
     const [products, setProducts] = useState([]);
@@ -167,7 +168,7 @@ function NewArrivalsContent() {
                             products.map((p) => (
                                 <div className="card" key={p.id} onClick={() => router.push(`/store/product/${p.id}`)}>
                                     <div className="card-img">
-                                        {p.images?.[0] ? <img src={p.images[0]} alt={p.name} /> : "📦"}
+                                        {p.images?.[0] ? <img src={cloudinaryThumb(p.images[0], 400)} alt={p.name} loading="lazy" decoding="async" /> : "📦"}
                                     </div>
                                     <div className="new-badge">NEW</div>
                                     {p.discount > 0 && <div className="discount-badge">{p.discount}% off</div>}
