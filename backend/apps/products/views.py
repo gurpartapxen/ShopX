@@ -106,24 +106,39 @@ class ProductListCreateView(APIView):
             .limit(limit)
         )
 
+        # ── Batch the per-product lookups to avoid an N+1 query storm ──────────
+        # Instead of querying inventory + reviews once per product (≈2N round
+        # trips to Atlas), fetch them for the whole page in two queries and map
+        # the results in memory.
+        product_ids = [str(p["_id"]) for p in raw_products]
+
+        # 1) Stock for every product on the page, in one query
+        stock_by_id = {
+            inv["product_id"]: inv.get("quantity", 0)
+            for inv in inventory_col().find({"product_id": {"$in": product_ids}})
+        }
+
+        # 2) Rating average + count for every product, in one grouped aggregation
+        ratings_by_id = {
+            r["_id"]: {"avg": round(r["avg"], 1), "count": r["count"]}
+            for r in reviews_col().aggregate([
+                {"$match": {"product_id": {"$in": product_ids}}},
+                {"$group": {"_id": "$product_id", "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}},
+            ])
+        }
+
         products = []
         for p in raw_products:
             p_id  = str(p["_id"])
-            inv   = inventory_col().find_one({"product_id": p_id})
-            stock = inv["quantity"] if inv else 0
+            stock = stock_by_id.get(p_id, 0)
 
             if low_stock and not (0 < stock < 20):
                 continue
 
-            # attach avg rating
-            pipeline = [
-                {"$match": {"product_id": p_id}},
-                {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}}
-            ]
-            agg = list(reviews_col().aggregate(pipeline))
-            p["avg_rating"]    = round(agg[0]["avg"], 1) if agg else 0
-            p["review_count"]  = agg[0]["count"] if agg else 0
-            p["stock"] = stock
+            rating = ratings_by_id.get(p_id)
+            p["avg_rating"]   = rating["avg"] if rating else 0
+            p["review_count"] = rating["count"] if rating else 0
+            p["stock"]        = stock
             products.append(to_str_id(p))
 
         total = products_col().count_documents(query)
