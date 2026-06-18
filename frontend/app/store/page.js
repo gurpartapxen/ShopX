@@ -1,19 +1,15 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
+import useSWRInfinite from "swr/infinite";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { productsAPI } from "@/lib/api";
+import { fetcher } from "@/lib/fetcher";
 import { cloudinaryThumb } from "@/lib/img";
 
 const PAGE_SIZE = 20;
 
 export default function StorePage() {
-    const [allProducts,    setAllProducts]    = useState([]);   // raw, server-paginated
-    const [page,           setPage]           = useState(1);
-    const [totalPages,     setTotalPages]     = useState(1);
-    const [loading,        setLoading]        = useState(true);  // first page
-    const [loadingMore,    setLoadingMore]    = useState(false); // subsequent pages
     const [search,         setSearch]         = useState("");
     const [category,       setCategory]       = useState("");
     const [gender,         setGender]         = useState("");
@@ -33,9 +29,26 @@ export default function StorePage() {
         if (!authLoading && !user) router.push("/login");
     }, [user, authLoading]);
 
-    // Refetch from page 1 whenever the category changes. Search and gender are
-    // applied client-side (below), so they don't trigger a network round trip.
-    useEffect(() => { fetchProducts(true); }, [category]);
+    // ── Products via SWR infinite — cached, deduped, paginated ────────────────
+    // SWR caches each page by its URL key, so revisiting a category (or hitting
+    // Back) is instant and in-flight duplicate requests are deduped.
+    const getKey = (pageIndex, prev) => {
+        if (prev && prev.page >= prev.pages) return null;   // no more pages
+        const cat = category ? `&category=${category}` : "";
+        return `/products/?page=${pageIndex + 1}&limit=${PAGE_SIZE}${cat}`;
+    };
+    const { data: pages, size, setSize } = useSWRInfinite(getKey, fetcher, {
+        revalidateFirstPage: false,
+        revalidateOnFocus:   false,
+    });
+
+    const allProducts = useMemo(() => (pages ? pages.flatMap(pg => pg.products) : []), [pages]);
+    const totalPages  = pages?.[0]?.pages ?? 1;
+    const loading     = !pages;                          // first page loading
+    const loadingMore = !!pages && size > pages.length;  // a further page loading
+
+    // Reset SWR pagination to page 1 when the category changes.
+    useEffect(() => { setSize(1); }, [category, setSize]);
 
     // Derived view: filter the loaded pages by search text and gender.
     const products = useMemo(() => {
@@ -70,19 +83,13 @@ export default function StorePage() {
     useEffect(() => {
         const wl   = JSON.parse(localStorage.getItem("wishlist") || "[]");
         const cart = JSON.parse(localStorage.getItem("cart")     || "[]");
+        // localStorage is client-only; setting these in an effect (rather than a
+        // render-time initializer) is what avoids an SSR hydration mismatch.
+        /* eslint-disable react-hooks/set-state-in-effect */
         setWishlistCount(wl.length);
         setCartCount(cart.reduce((sum, i) => sum + i.quantity, 0));
+        /* eslint-enable react-hooks/set-state-in-effect */
     }, []);
-
-    useEffect(() => {
-        if (user && !authLoading) {
-            const shown = sessionStorage.getItem("login_toast_shown");
-            if (!shown) {
-                showToast(`Welcome back, ${user.name.split(" ")[0]}! 👋`, "success");
-                sessionStorage.setItem("login_toast_shown", "1");
-            }
-        }
-    }, [user, authLoading]);
 
     const showToast = (message, type = "success") => {
         const id = Date.now();
@@ -90,27 +97,22 @@ export default function StorePage() {
         setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
     };
 
-    // reset=true  → load page 1 and replace (category switch / first load)
-    // reset=false → load the next page and append ("Load more")
-    const fetchProducts = async (reset = false) => {
-        const nextPage = reset ? 1 : page + 1;
-        reset ? setLoading(true) : setLoadingMore(true);
-        try {
-            const params = { page: nextPage, limit: PAGE_SIZE };
-            if (category) params.category = category;
-
-            const res  = await productsAPI.list(params);
-            const data = res.data.data;
-
-            setAllProducts(prev => (reset ? data.products : [...prev, ...data.products]));
-            setPage(nextPage);
-            setTotalPages(data.pages || 1);
-        } catch (err) {
-            console.error(err);
-        } finally {
-            reset ? setLoading(false) : setLoadingMore(false);
+    useEffect(() => {
+        if (user && !authLoading) {
+            const shown = sessionStorage.getItem("login_toast_shown");
+            if (!shown) {
+                sessionStorage.setItem("login_toast_shown", "1");
+                // Defer to the next tick so the toast isn't a synchronous
+                // state update inside the effect (avoids a cascading render).
+                const t = setTimeout(
+                    () => showToast(`Welcome back, ${user.name.split(" ")[0]}! 👋`, "success"),
+                    0,
+                );
+                return () => clearTimeout(t);
+            }
         }
-    };
+    }, [user, authLoading]);
+
     const closeSidebar = () => {
         setClosingSidebar(true);
         setTimeout(() => {
@@ -831,9 +833,9 @@ export default function StorePage() {
                         )}
                     </div>
 
-                    {!loading && page < totalPages && (
+                    {!loading && pages && pages.length < totalPages && (
                         <div style={{ display: "flex", justifyContent: "center", marginTop: 32 }}>
-                            <button className="load-more" onClick={() => fetchProducts(false)} disabled={loadingMore}>
+                            <button className="load-more" onClick={() => setSize(size + 1)} disabled={loadingMore}>
                                 {loadingMore ? "Loading…" : "Load more"}
                             </button>
                         </div>
