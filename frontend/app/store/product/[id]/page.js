@@ -4,9 +4,10 @@ import ProductPageClient from "./ProductPageClient";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-// ISR: cache the rendered page for 1 hour, then re-fetch in the background.
-// Products don't need real-time accuracy for SEO crawlers.
-export const revalidate = 3600;
+// ISR: cache the rendered page for 5 minutes, then re-fetch in the background.
+// Short enough that stock/price stay reasonably fresh (checkout re-validates
+// stock atomically anyway), long enough to absorb crawler/traffic spikes.
+export const revalidate = 300;
 
 async function fetchProduct(id) {
     try {
@@ -116,8 +117,9 @@ export default async function ProductPage({ params }) {
                     dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
                 />
             )}
-            {/* Hand off all interactivity to the Client Component */}
-            <ProductPageClient productId={id} />
+            {/* Hand off to the Client Component, seeding it with the product the
+                server already fetched so it renders instantly without re-fetching. */}
+            <ProductPageClient productId={id} initialProduct={product} />
         </>
     );
 }

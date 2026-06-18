@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { productsAPI } from "@/lib/api";
 
-// Receives productId as a plain prop from the Server Component wrapper (page.js).
-export default function ProductPageClient({ productId }) {
+// Receives productId + the server-fetched product from the Server Component
+// wrapper (page.js). Seeding state with initialProduct lets the page render
+// instantly and avoids re-fetching the same product the server already loaded.
+export default function ProductPageClient({ productId, initialProduct = null }) {
     // Alias so the rest of the component is unchanged.
     const id = productId;
 
-    const [product,    setProduct]    = useState(null);
-    const [loading,    setLoading]    = useState(true);
+    const [product,    setProduct]    = useState(initialProduct);
+    const [loading,    setLoading]    = useState(!initialProduct);
     const [imgIdx,     setImgIdx]     = useState(0);
     const [qty,        setQty]        = useState(1);
     const [inWishlist, setInWishlist] = useState(false);
@@ -35,7 +37,8 @@ export default function ProductPageClient({ productId }) {
     }, [user, authLoading]);
 
     useEffect(() => {
-        fetchProduct();
+        // The server already provided the product; only fetch if it didn't.
+        if (!initialProduct) fetchProduct();
         fetchReviews(1);
         const wl = JSON.parse(localStorage.getItem("wishlist") || "[]");
         setInWishlist(wl.some(i => i.product_id === id));
